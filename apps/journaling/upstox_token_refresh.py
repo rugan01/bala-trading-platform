@@ -11,6 +11,7 @@ Usage:
     python upstox_token_refresh.py --account ALL     # Refresh all accounts
 
 Requirements:
+    Python 3.12+ and:
     pip install upstox-totp python-dotenv
 
 References:
@@ -26,7 +27,6 @@ from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv, set_key
-from upstox_totp import UpstoxTOTP
 
 # Configure logging
 LOG_FILE = os.path.expanduser('~/Library/Logs/upstox_token_refresh.log')
@@ -45,6 +45,28 @@ logger = logging.getLogger(__name__)
 SUPPORTED_ACCOUNTS = ['BALA', 'NIMMY']
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ENV_FILE = REPO_ROOT / '.env'
+
+
+def require_upstox_totp():
+    """Import upstox-totp lazily so the CLI can fail with a helpful setup message."""
+    if sys.version_info < (3, 12):
+        raise RuntimeError(
+            "upstox-totp requires Python 3.12+. "
+            "Run this script with a 3.12+ interpreter, for example:\n"
+            "  ./.venv/bin/python apps/journaling/upstox_token_refresh.py --account ALL\n"
+            "or:\n"
+            "  python3.13 apps/journaling/upstox_token_refresh.py --account ALL"
+        )
+    try:
+        from upstox_totp import UpstoxTOTP  # type: ignore
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "Missing dependency 'upstox-totp'. Install journaling dependencies with:\n"
+            "  python3.13 -m pip install -r apps/journaling/requirements.txt\n"
+            "or install only the missing package with:\n"
+            "  python3.13 -m pip install upstox-totp"
+        ) from exc
+    return UpstoxTOTP
 
 
 class TokenRefresher:
@@ -87,6 +109,7 @@ class TokenRefresher:
     def refresh_token(self) -> str:
         """Refresh the access token using upstox-totp library."""
         logger.info(f"[{self.account}] Initiating token refresh via upstox-totp...")
+        UpstoxTOTP = require_upstox_totp()
 
         # Set environment variables that upstox-totp library expects
         os.environ['UPSTOX_CLIENT_ID'] = self.api_key
@@ -241,6 +264,11 @@ def main():
         help='Only refresh if not already done today (for wake/interval triggers)'
     )
     args = parser.parse_args()
+
+    if not Path(args.env_file).exists():
+        logger.error("Env file not found: %s", args.env_file)
+        logger.error("Create it first with: cp .env.example .env")
+        return 1
 
     # Determine which accounts to refresh
     if args.account == 'ALL':

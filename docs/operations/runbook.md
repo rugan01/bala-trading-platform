@@ -12,6 +12,20 @@ PYTHONPATH=packages/trading_platform/src python3.11 -m trading_platform.cli init
 
 Fill `.env` with your real local values before running anything that depends on Upstox, Notion, or Telegram.
 
+Install journaling dependencies:
+
+```bash
+python3.11 -m pip install -r apps/journaling/requirements.txt
+```
+
+For `apps/journaling/upstox_token_refresh.py`, use Python `3.12+` because the `upstox-totp`
+dependency does not support Python `3.11`. Recommended:
+
+```bash
+python3.13 -m venv .venv
+./.venv/bin/python -m pip install -r apps/journaling/requirements.txt
+```
+
 ## Morning brief and learning loop
 
 ```bash
@@ -53,7 +67,7 @@ python3.11 apps/journaling/broker_trade_backfill.py \
 Token refresh:
 
 ```bash
-python3.11 apps/journaling/upstox_token_refresh.py --account ALL
+./.venv/bin/python apps/journaling/upstox_token_refresh.py --account ALL
 ```
 
 ## Walk-forward engine
@@ -109,4 +123,3 @@ Outputs:
 cd /path/to/bala-trading-platform
 PYTHONPATH=packages/trading_platform/src python3.11 -m trading_platform.cli init-db
 ```
-

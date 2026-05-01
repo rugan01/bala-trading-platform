@@ -14,6 +14,21 @@ This app group handles:
 - `upstox_token_refresh.py`
 - `journal_keys.py`
 
+## Install dependencies
+
+```bash
+cd /path/to/bala-trading-platform
+python3.11 -m pip install -r apps/journaling/requirements.txt
+```
+
+For `upstox_token_refresh.py`, use Python `3.12+` because `upstox-totp` does not support Python `3.11`.
+A simple setup is:
+
+```bash
+python3.13 -m venv .venv
+./.venv/bin/python -m pip install -r apps/journaling/requirements.txt
+```
+
 ## Common commands
 
 ```bash
@@ -28,7 +43,7 @@ python3.11 apps/journaling/broker_trade_backfill.py \
   --broker-file /path/to/export.xlsx \
   --date YYYY-MM-DD
 
-python3.11 apps/journaling/upstox_token_refresh.py --account ALL
+./.venv/bin/python apps/journaling/upstox_token_refresh.py --account ALL
 ```
 
 ## Configuration
@@ -47,4 +62,3 @@ Important values:
 - same-day processing is preferred because Upstox same-day trades include better timestamp context
 - broker XLSX backfill is the fallback path when the same-day run was missed
 - older deep-reference notes were preserved in `TOOLS_README_SOURCE.md`
-

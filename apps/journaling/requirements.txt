@@ -1,0 +1,3 @@
+python-dotenv>=1.0
+requests>=2.31
+upstox-totp>=0.7; python_version >= "3.12"
