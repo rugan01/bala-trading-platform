@@ -22,7 +22,7 @@ The design principle is:
 ## Current Stage
 
 Today the folder:
-- [/Users/rugan/balas-product-os/Tools/walk_forward](/Users/rugan/balas-product-os/Tools/walk_forward)
+- [/path/to/bala-trading-platform/apps/walk-forward](/path/to/bala-trading-platform/apps/walk-forward)
 
 contains a **working paper-trading validator centered on SILVERMIC** with:
 - live paper reference strategy:
@@ -43,14 +43,14 @@ It is currently:
   - `single_lot_t1_exit`
 
 What already works:
-- runtime composition through [runtime.py](/Users/rugan/balas-product-os/Tools/walk_forward/runtime.py)
-- normalized models in [models.py](/Users/rugan/balas-product-os/Tools/walk_forward/models.py)
-- protocol boundaries in [interfaces.py](/Users/rugan/balas-product-os/Tools/walk_forward/interfaces.py)
-- strategy registry in [strategy_registry.py](/Users/rugan/balas-product-os/Tools/walk_forward/strategy_registry.py)
-- position plan registry in [position_plans.py](/Users/rugan/balas-product-os/Tools/walk_forward/position_plans.py)
-- replay event loop in [event_loop.py](/Users/rugan/balas-product-os/Tools/walk_forward/event_loop.py)
-- replay provider and CLI in [replay_provider.py](/Users/rugan/balas-product-os/Tools/walk_forward/replay_provider.py) and [replay.py](/Users/rugan/balas-product-os/Tools/walk_forward/replay.py)
-- replay metrics and artifact persistence in [replay_results.py](/Users/rugan/balas-product-os/Tools/walk_forward/replay_results.py)
+- runtime composition through [runtime.py](/path/to/bala-trading-platform/apps/walk-forward/runtime.py)
+- normalized models in [models.py](/path/to/bala-trading-platform/apps/walk-forward/models.py)
+- protocol boundaries in [interfaces.py](/path/to/bala-trading-platform/apps/walk-forward/interfaces.py)
+- strategy registry in [strategy_registry.py](/path/to/bala-trading-platform/apps/walk-forward/strategy_registry.py)
+- position plan registry in [position_plans.py](/path/to/bala-trading-platform/apps/walk-forward/position_plans.py)
+- replay event loop in [event_loop.py](/path/to/bala-trading-platform/apps/walk-forward/event_loop.py)
+- replay provider and CLI in [replay_provider.py](/path/to/bala-trading-platform/apps/walk-forward/replay_provider.py) and [replay.py](/path/to/bala-trading-platform/apps/walk-forward/replay.py)
+- replay metrics and artifact persistence in [replay_results.py](/path/to/bala-trading-platform/apps/walk-forward/replay_results.py)
 - strategy selection via `WFV_STRATEGY_ID` or `--strategy-id`
 - position plan selection via `WFV_POSITION_PLAN_ID` or `--position-plan-id`
 - batch replay matrix selection via `--strategy-ids`, `--position-plan-ids`, and `--all-session-dates`
@@ -72,10 +72,10 @@ What already works:
 - day summary capture
 
 What is still tightly coupled:
-- strategy rules are still implemented by [signal_detector.py](/Users/rugan/balas-product-os/Tools/walk_forward/signal_detector.py), wrapped by [silvermic_v3_strategy.py](/Users/rugan/balas-product-os/Tools/walk_forward/silvermic_v3_strategy.py)
-- position-management rules are still implemented by [trade_manager.py](/Users/rugan/balas-product-os/Tools/walk_forward/trade_manager.py), wrapped by [paper_position_manager.py](/Users/rugan/balas-product-os/Tools/walk_forward/paper_position_manager.py)
-- market data still depends on Upstox internals in [upstox_feed.py](/Users/rugan/balas-product-os/Tools/walk_forward/upstox_feed.py), wrapped by [upstox_provider.py](/Users/rugan/balas-product-os/Tools/walk_forward/upstox_provider.py)
-- configuration is strategy-specific in [config.py](/Users/rugan/balas-product-os/Tools/walk_forward/config.py)
+- strategy rules are still implemented by [signal_detector.py](/path/to/bala-trading-platform/apps/walk-forward/signal_detector.py), wrapped by [silvermic_v3_strategy.py](/path/to/bala-trading-platform/apps/walk-forward/silvermic_v3_strategy.py)
+- position-management rules are still implemented by [trade_manager.py](/path/to/bala-trading-platform/apps/walk-forward/trade_manager.py), wrapped by [paper_position_manager.py](/path/to/bala-trading-platform/apps/walk-forward/paper_position_manager.py)
+- market data still depends on Upstox internals in [upstox_feed.py](/path/to/bala-trading-platform/apps/walk-forward/upstox_feed.py), wrapped by [upstox_provider.py](/path/to/bala-trading-platform/apps/walk-forward/upstox_provider.py)
+- configuration is strategy-specific in [config.py](/path/to/bala-trading-platform/apps/walk-forward/config.py)
 
 So the honest classification is:
 - **specialized paper validator with first research-grade strategy/lifecycle seams**, not yet a generic strategy engine
@@ -543,6 +543,6 @@ The safest next milestone after tomorrow’s paper session is:
 4. prove no behavior change
 
 Detailed Milestone 1 interface note:
-- [MILESTONE_1_DESIGN.md](/Users/rugan/balas-product-os/Tools/walk_forward/MILESTONE_1_DESIGN.md)
+- [MILESTONE_1_DESIGN.md](/path/to/bala-trading-platform/apps/walk-forward/MILESTONE_1_DESIGN.md)
 
 That gets the architecture moving without risking the current operational path.

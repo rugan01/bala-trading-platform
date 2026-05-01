@@ -16,15 +16,15 @@
 The current system already has valuable working pieces:
 
 ### Existing strengths
-- `Tools/trade_journaling.py`
+- `apps/journaling/trade_journaling.py`
   - same-day Upstox trade pull
   - Notion journal upsert flow
   - stable `Journal Key` dedupe
-- `Tools/broker_trade_backfill.py`
+- `apps/journaling/broker_trade_backfill.py`
   - broker XLSX reconciliation
   - historical time repair
   - missed-day recovery
-- `Tools/walk_forward/`
+- `apps/walk-forward/`
   - paper-only strategy validation engine
   - replay and batch replay
   - normalized interfaces beginning to emerge
@@ -142,45 +142,26 @@ Processes needed:
 
 ## 4. Recommended Repo / Folder Direction
 
-Do **not** keep growing this only as loose scripts under `Tools/`.
+Do **not** keep growing this only as loose standalone scripts.
 
-Recommended next project root:
-- `/Users/rugan/balas-product-os/Projects/trading-platform/`
+Recommended project root:
+- `/path/to/bala-trading-platform/`
 
 Suggested layout:
 
 ```text
-Projects/trading-platform/
+.
   README.md
   docs/
-  src/trading_platform/
-    domain/
-    application/
-    adapters/
-      brokers/
-        upstox/
-      market_data/
-        upstox/
-      journals/
-        notion/
-      alerts/
-        telegram/
-    services/
-      archive/
-      risk/
-      execution/
-      monitoring/
-      strategies/
-    cli/
-    api/
-  tests/
+  apps/
+  packages/
   data/
     archive/
     raw/
     reports/
 ```
 
-Current scripts in `Tools/` can remain operational and gradually become wrappers around the new platform services.
+Current app groups can remain operational and gradually become wrappers around more formal platform services.
 
 ---
 
@@ -278,11 +259,11 @@ When the platform becomes always-on or multi-service:
 ### Immediate archive location
 
 Recommended local archive root:
-- `/Users/rugan/balas-product-os/Projects/trading-platform/data/archive/`
+- `/path/to/bala-trading-platform/data/archive/`
 
 Suggested files:
-- `/Users/rugan/balas-product-os/Projects/trading-platform/data/archive/platform.sqlite3`
-- `/Users/rugan/balas-product-os/Projects/trading-platform/data/archive/raw/YYYY-MM-DD/`
+- `/path/to/bala-trading-platform/data/archive/platform.sqlite3`
+- `/path/to/bala-trading-platform/data/archive/raw/YYYY-MM-DD/`
 
 ---
 
@@ -646,16 +627,16 @@ Build **Milestone 1** only:
 - archive lookup CLI
 
 ### Concrete implementation suggestion
-Start a new project root:
-- `/Users/rugan/balas-product-os/Projects/trading-platform/`
+Use the monorepo root:
+- `/path/to/bala-trading-platform/`
 
 Phase-1 files:
 
 ```text
-Projects/trading-platform/
+.
   README.md
   docs/
-  src/trading_platform/
+  packages/trading_platform/src/trading_platform/
     archive/
       models.py
       schema.py

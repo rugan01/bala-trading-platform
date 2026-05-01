@@ -15,8 +15,8 @@ Use it for:
 - ideas to revisit later
 
 Keep the long-term architecture in:
-- `/Users/rugan/Projects/upstox-analyzer/README.md`
-- `/Users/rugan/Projects/upstox-analyzer/LLM_HANDOVER.md`
+- `/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/README.md`
+- `/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/LLM_HANDOVER.md`
 
 Use this file for incremental operational notes.
 
@@ -95,7 +95,7 @@ This kind of universe scan is useful even when exact intraday structure from Ups
 ### SENSEX expiry monitor added
 
 New module:
-- `/Users/rugan/Projects/upstox-analyzer/index_expiry_monitor/sensex_expiry_short_straddle.py`
+- `/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/index_expiry_monitor/sensex_expiry_short_straddle.py`
 
 Purpose:
 - capture `9:16` SENSEX baseline spot from Upstox live quote and ATM CE/PE premiums from Upstox live option chain
@@ -110,7 +110,7 @@ Purpose:
 ### Actual SENSEX live-position monitor added
 
 New module:
-- `/Users/rugan/Projects/upstox-analyzer/index_expiry_monitor/sensex_live_position_monitor.py`
+- `/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/index_expiry_monitor/sensex_live_position_monitor.py`
 
 Purpose:
 - monitor already-entered live SENSEX option positions in the NIMMY account

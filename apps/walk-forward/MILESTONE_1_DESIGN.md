@@ -40,7 +40,7 @@ without changing:
 After Milestone 1, this should still work the same way:
 
 ```bash
-cd /Users/rugan/balas-product-os/Tools/walk_forward
+cd /path/to/bala-trading-platform/apps/walk-forward
 source ../.venv/bin/activate
 python main.py
 ```

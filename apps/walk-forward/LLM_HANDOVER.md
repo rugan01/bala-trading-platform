@@ -9,13 +9,13 @@ Use `apps/walk-forward/README.md` and `docs/operations/runbook.md` for the curre
 This file is the quickest way for another LLM to pick up the `SILVERMIC` walk-forward validator without re-discovering the same runtime issues.
 
 Longer-term architecture and milestone plan:
-- [ROADMAP.md](/Users/rugan/balas-product-os/Tools/walk_forward/ROADMAP.md)
-- [MILESTONE_1_DESIGN.md](/Users/rugan/balas-product-os/Tools/walk_forward/MILESTONE_1_DESIGN.md)
+- [ROADMAP.md](/path/to/bala-trading-platform/apps/walk-forward/ROADMAP.md)
+- [MILESTONE_1_DESIGN.md](/path/to/bala-trading-platform/apps/walk-forward/MILESTONE_1_DESIGN.md)
 
 ## Scope
 
 Folder:
-- [/Users/rugan/balas-product-os/Tools/walk_forward](/Users/rugan/balas-product-os/Tools/walk_forward)
+- [/path/to/bala-trading-platform/apps/walk-forward](/path/to/bala-trading-platform/apps/walk-forward)
 
 Purpose:
 - paper-trade the `SILVERMIC V3 CPR Band TC/BC Rejection` strategy during live MCX hours
@@ -26,23 +26,23 @@ Purpose:
 Current maturity:
 - operational as a **paper validator with first strategy/provider boundaries**
 - not yet fully strategy-agnostic or broker-agnostic
-- roadmap for that transition is documented separately in [ROADMAP.md](/Users/rugan/balas-product-os/Tools/walk_forward/ROADMAP.md)
+- roadmap for that transition is documented separately in [ROADMAP.md](/path/to/bala-trading-platform/apps/walk-forward/ROADMAP.md)
 
 Current architecture state as of `2026-04-18`:
-- `main.py` now builds components through [runtime.py](/Users/rugan/balas-product-os/Tools/walk_forward/runtime.py)
-- live runner profiles are registered in [runner_profiles.py](/Users/rugan/balas-product-os/Tools/walk_forward/runner_profiles.py)
-- normalized models are in [models.py](/Users/rugan/balas-product-os/Tools/walk_forward/models.py)
-- protocol interfaces are in [interfaces.py](/Users/rugan/balas-product-os/Tools/walk_forward/interfaces.py)
-- Upstox is wrapped by [upstox_provider.py](/Users/rugan/balas-product-os/Tools/walk_forward/upstox_provider.py)
-- the current rules are wrapped as [silvermic_v3_strategy.py](/Users/rugan/balas-product-os/Tools/walk_forward/silvermic_v3_strategy.py)
-- paper execution is wrapped by [paper_position_manager.py](/Users/rugan/balas-product-os/Tools/walk_forward/paper_position_manager.py)
-- strategy selection is through [strategy_registry.py](/Users/rugan/balas-product-os/Tools/walk_forward/strategy_registry.py)
-- position lifecycle selection is through [position_plans.py](/Users/rugan/balas-product-os/Tools/walk_forward/position_plans.py)
-- replay event processing is in [event_loop.py](/Users/rugan/balas-product-os/Tools/walk_forward/event_loop.py)
-- replay provider/CSV loading is in [replay_provider.py](/Users/rugan/balas-product-os/Tools/walk_forward/replay_provider.py)
-- replay metrics/persistence is in [replay_results.py](/Users/rugan/balas-product-os/Tools/walk_forward/replay_results.py)
-- replay CLI is [replay.py](/Users/rugan/balas-product-os/Tools/walk_forward/replay.py)
-- batch replay/experiment CLI is [replay_batch.py](/Users/rugan/balas-product-os/Tools/walk_forward/replay_batch.py)
+- `main.py` now builds components through [runtime.py](/path/to/bala-trading-platform/apps/walk-forward/runtime.py)
+- live runner profiles are registered in [runner_profiles.py](/path/to/bala-trading-platform/apps/walk-forward/runner_profiles.py)
+- normalized models are in [models.py](/path/to/bala-trading-platform/apps/walk-forward/models.py)
+- protocol interfaces are in [interfaces.py](/path/to/bala-trading-platform/apps/walk-forward/interfaces.py)
+- Upstox is wrapped by [upstox_provider.py](/path/to/bala-trading-platform/apps/walk-forward/upstox_provider.py)
+- the current rules are wrapped as [silvermic_v3_strategy.py](/path/to/bala-trading-platform/apps/walk-forward/silvermic_v3_strategy.py)
+- paper execution is wrapped by [paper_position_manager.py](/path/to/bala-trading-platform/apps/walk-forward/paper_position_manager.py)
+- strategy selection is through [strategy_registry.py](/path/to/bala-trading-platform/apps/walk-forward/strategy_registry.py)
+- position lifecycle selection is through [position_plans.py](/path/to/bala-trading-platform/apps/walk-forward/position_plans.py)
+- replay event processing is in [event_loop.py](/path/to/bala-trading-platform/apps/walk-forward/event_loop.py)
+- replay provider/CSV loading is in [replay_provider.py](/path/to/bala-trading-platform/apps/walk-forward/replay_provider.py)
+- replay metrics/persistence is in [replay_results.py](/path/to/bala-trading-platform/apps/walk-forward/replay_results.py)
+- replay CLI is [replay.py](/path/to/bala-trading-platform/apps/walk-forward/replay.py)
+- batch replay/experiment CLI is [replay_batch.py](/path/to/bala-trading-platform/apps/walk-forward/replay_batch.py)
 - registered strategies:
   - `silvermic_cpr_band_v3`
   - `silvermic_cpr_breakout_v1`
@@ -160,12 +160,12 @@ Validation done:
 ### 0d. Replay result persistence and metrics
 
 What changed:
-- added [replay_results.py](/Users/rugan/balas-product-os/Tools/walk_forward/replay_results.py)
+- added [replay_results.py](/path/to/bala-trading-platform/apps/walk-forward/replay_results.py)
 - `replay.py` now writes:
   - JSON report
   - trades CSV
 - default output folder:
-  - `/Users/rugan/balas-product-os/Tools/walk_forward/output/replay`
+  - `/path/to/bala-trading-platform/apps/walk-forward/output/replay`
 - new CLI flags:
   - `--output-dir`
   - `--run-id`
@@ -192,16 +192,16 @@ Metrics currently computed:
 
 Validation done:
 - `python replay.py --self-test --run-id smoke_metrics_test` wrote:
-  - `/Users/rugan/balas-product-os/Tools/walk_forward/output/replay/smoke_metrics_test.json`
-  - `/Users/rugan/balas-product-os/Tools/walk_forward/output/replay/smoke_metrics_test_trades.csv`
+  - `/path/to/bala-trading-platform/apps/walk-forward/output/replay/smoke_metrics_test.json`
+  - `/path/to/bala-trading-platform/apps/walk-forward/output/replay/smoke_metrics_test_trades.csv`
 - JSON summary and CSV trade row were inspected successfully
 
 ### 0e. Batch replay experiment runner
 
 What changed:
-- added [replay_batch.py](/Users/rugan/balas-product-os/Tools/walk_forward/replay_batch.py)
-- added [replay_batch_manifest.example.json](/Users/rugan/balas-product-os/Tools/walk_forward/replay_batch_manifest.example.json)
-- refactored [replay.py](/Users/rugan/balas-product-os/Tools/walk_forward/replay.py) so the core replay execution can be reused by batch mode
+- added [replay_batch.py](/path/to/bala-trading-platform/apps/walk-forward/replay_batch.py)
+- added [replay_batch_manifest.example.json](/path/to/bala-trading-platform/apps/walk-forward/replay_batch_manifest.example.json)
+- refactored [replay.py](/path/to/bala-trading-platform/apps/walk-forward/replay.py) so the core replay execution can be reused by batch mode
 - batch mode can run:
   - `--self-test`
   - all CSVs in a folder through `--csv-dir` and `--pattern`
@@ -217,7 +217,7 @@ What did not change:
 
 Batch outputs:
 - per-run replay reports under:
-  - `/Users/rugan/balas-product-os/Tools/walk_forward/output/replay_batch/<batch_id>/runs/`
+  - `/path/to/bala-trading-platform/apps/walk-forward/output/replay_batch/<batch_id>/runs/`
 - ranked batch files:
   - `batch_summary.csv`
   - `batch_summary.json`
@@ -231,15 +231,15 @@ Validation done:
 - AST syntax check passed for all `walk_forward/*.py`
 - `python replay_batch.py --help` works
 - `python replay_batch.py --self-test --batch-id smoke_batch_test` wrote:
-  - `/Users/rugan/balas-product-os/Tools/walk_forward/output/replay_batch/smoke_batch_test/batch_summary.csv`
-  - `/Users/rugan/balas-product-os/Tools/walk_forward/output/replay_batch/smoke_batch_test/batch_summary.json`
-  - `/Users/rugan/balas-product-os/Tools/walk_forward/output/replay_batch/smoke_batch_test/runs/self_test.json`
-  - `/Users/rugan/balas-product-os/Tools/walk_forward/output/replay_batch/smoke_batch_test/runs/self_test_trades.csv`
+  - `/path/to/bala-trading-platform/apps/walk-forward/output/replay_batch/smoke_batch_test/batch_summary.csv`
+  - `/path/to/bala-trading-platform/apps/walk-forward/output/replay_batch/smoke_batch_test/batch_summary.json`
+  - `/path/to/bala-trading-platform/apps/walk-forward/output/replay_batch/smoke_batch_test/runs/self_test.json`
+  - `/path/to/bala-trading-platform/apps/walk-forward/output/replay_batch/smoke_batch_test/runs/self_test_trades.csv`
 
 ### 0f. Multi-strategy, multi-plan, and multi-session replay sweep
 
 What changed:
-- added [silvermic_cpr_breakout_strategy.py](/Users/rugan/balas-product-os/Tools/walk_forward/silvermic_cpr_breakout_strategy.py)
+- added [silvermic_cpr_breakout_strategy.py](/path/to/bala-trading-platform/apps/walk-forward/silvermic_cpr_breakout_strategy.py)
 - strategy registry now exposes:
   - `silvermic_cpr_band_v3`
   - `silvermic_cpr_breakout_v1`
@@ -247,8 +247,8 @@ What changed:
   - `partial_t1_trail`
   - `full_t1_exit`
   - `single_lot_t1_exit`
-- [replay_provider.py](/Users/rugan/balas-product-os/Tools/walk_forward/replay_provider.py) can enumerate replayable session dates from one CSV
-- [replay_batch.py](/Users/rugan/balas-product-os/Tools/walk_forward/replay_batch.py) now supports:
+- [replay_provider.py](/path/to/bala-trading-platform/apps/walk-forward/replay_provider.py) can enumerate replayable session dates from one CSV
+- [replay_batch.py](/path/to/bala-trading-platform/apps/walk-forward/replay_batch.py) now supports:
   - `--csv`
   - `--all-session-dates`
   - `--date-from`
@@ -270,13 +270,13 @@ Validation done:
 - `python replay.py --self-test --strategy-id silvermic_cpr_breakout_v1 --position-plan-id full_t1_exit --run-id breakout_full_exit_smoke` wrote replay artifacts successfully
 - `python replay_batch.py --self-test --strategy-ids silvermic_cpr_band_v3 silvermic_cpr_breakout_v1 --position-plan-ids partial_t1_trail full_t1_exit --batch-id strategy_plan_matrix_smoke` completed successfully
 - `python replay_batch.py --csv /tmp/wfv_multi_session.csv --all-session-dates --strategy-ids silvermic_cpr_band_v3 silvermic_cpr_breakout_v1 --position-plan-ids partial_t1_trail full_t1_exit --batch-id multi_session_matrix_smoke` completed successfully and wrote:
-  - `/Users/rugan/balas-product-os/Tools/walk_forward/output/replay_batch/multi_session_matrix_smoke/batch_summary.csv`
-  - `/Users/rugan/balas-product-os/Tools/walk_forward/output/replay_batch/multi_session_matrix_smoke/batch_summary.json`
+  - `/path/to/bala-trading-platform/apps/walk-forward/output/replay_batch/multi_session_matrix_smoke/batch_summary.csv`
+  - `/path/to/bala-trading-platform/apps/walk-forward/output/replay_batch/multi_session_matrix_smoke/batch_summary.json`
 
 ### 0g. Profile-driven multi-runner live paper orchestration
 
 What changed:
-- added [runner_profiles.py](/Users/rugan/balas-product-os/Tools/walk_forward/runner_profiles.py)
+- added [runner_profiles.py](/path/to/bala-trading-platform/apps/walk-forward/runner_profiles.py)
 - `RunnerProfile` now supports:
   - `profile_id`
   - `instrument_key_prefix`
@@ -309,10 +309,10 @@ Problem that existed:
 - older code relied on legacy Upstox instrument-master URLs that were returning `403`
 
 Fix:
-- [upstox_feed.py](/Users/rugan/balas-product-os/Tools/walk_forward/upstox_feed.py) now uses:
+- [upstox_feed.py](/path/to/bala-trading-platform/apps/walk-forward/upstox_feed.py) now uses:
   - `https://assets.upstox.com/market-quote/instruments/exchange/MCX.json.gz`
 - this is the same working source already used in:
-  - [/Users/rugan/Projects/upstox-analyzer/mcx_monitor/analyze_mcx.py](/Users/rugan/Projects/upstox-analyzer/mcx_monitor/analyze_mcx.py)
+  - [/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/mcx_monitor/analyze_mcx.py](/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/mcx_monitor/analyze_mcx.py)
 
 Details:
 - resolver filters `MCX_FO` + `FUT/FUTCOM` + `underlying_symbol/name/trading_symbol` matching `SILVERMIC`
@@ -347,16 +347,16 @@ Problem that existed:
 - summary could be empty/wrong even if trades closed correctly
 
 Fix:
-- [trade_manager.py](/Users/rugan/balas-product-os/Tools/walk_forward/trade_manager.py)
+- [trade_manager.py](/path/to/bala-trading-platform/apps/walk-forward/trade_manager.py)
   - stores closed trades
-- [main.py](/Users/rugan/balas-product-os/Tools/walk_forward/main.py)
+- [main.py](/path/to/bala-trading-platform/apps/walk-forward/main.py)
   - pops newly closed trades into `self._day_trades`
   - captures EOD force-closed trades too
 
 ### 4. Notion database ID configurability
 
 Fix:
-- [config.py](/Users/rugan/balas-product-os/Tools/walk_forward/config.py) now reads:
+- [config.py](/path/to/bala-trading-platform/apps/walk-forward/config.py) now reads:
   - `NOTION_WF_DB_ID`
 - default remains:
   - operator-supplied Notion database ID from env
@@ -397,7 +397,7 @@ This page is disposable and can be deleted manually from Notion.
 ## Environment requirements
 
 Expected in:
-- [/Users/rugan/balas-product-os/.env](/Users/rugan/balas-product-os/.env)
+- [/path/to/bala-trading-platform/.env](/path/to/bala-trading-platform/.env)
 
 Required:
 - `UPSTOX_ACCESS_TOKEN`
@@ -417,7 +417,7 @@ Required:
 ## Run command
 
 ```bash
-cd /Users/rugan/balas-product-os/Tools/walk_forward
+cd /path/to/bala-trading-platform/apps/walk-forward
 source ../.venv/bin/activate
 python main.py
 ```
@@ -425,7 +425,7 @@ python main.py
 Optional dry-run:
 
 ```bash
-cd /Users/rugan/balas-product-os/Tools/walk_forward
+cd /path/to/bala-trading-platform/apps/walk-forward
 source ../.venv/bin/activate
 python main.py --dry-run
 ```
@@ -433,13 +433,13 @@ python main.py --dry-run
 Optional explicit strategy selection:
 
 ```bash
-cd /Users/rugan/balas-product-os/Tools/walk_forward
+cd /path/to/bala-trading-platform/apps/walk-forward
 source ../.venv/bin/activate
 python main.py --strategy-id silvermic_cpr_band_v3
 ```
 
 ```bash
-cd /Users/rugan/balas-product-os/Tools/walk_forward
+cd /path/to/bala-trading-platform/apps/walk-forward
 source ../.venv/bin/activate
 python main.py --strategy-id silvermic_cpr_breakout_v1
 ```
@@ -447,7 +447,7 @@ python main.py --strategy-id silvermic_cpr_breakout_v1
 List and run live profiles:
 
 ```bash
-cd /Users/rugan/balas-product-os/Tools/walk_forward
+cd /path/to/bala-trading-platform/apps/walk-forward
 source ../.venv/bin/activate
 python main.py --list-profiles
 python main.py --profile-id silvermic_v3_default
@@ -457,7 +457,7 @@ python main.py --profile-id silvermic_breakout_research
 Launch multiple profiles together:
 
 ```bash
-cd /Users/rugan/balas-product-os/Tools/walk_forward
+cd /path/to/bala-trading-platform/apps/walk-forward
 source ../.venv/bin/activate
 python main.py \
   --profile-id silvermic_v3_default \
@@ -468,13 +468,13 @@ python main.py \
 Optional explicit position-plan selection:
 
 ```bash
-cd /Users/rugan/balas-product-os/Tools/walk_forward
+cd /path/to/bala-trading-platform/apps/walk-forward
 source ../.venv/bin/activate
 python main.py --position-plan-id partial_t1_trail
 ```
 
 ```bash
-cd /Users/rugan/balas-product-os/Tools/walk_forward
+cd /path/to/bala-trading-platform/apps/walk-forward
 source ../.venv/bin/activate
 python main.py --position-plan-id full_t1_exit
 ```
@@ -482,7 +482,7 @@ python main.py --position-plan-id full_t1_exit
 Bounded live-data health test:
 
 ```bash
-cd /Users/rugan/balas-product-os/Tools/walk_forward
+cd /path/to/bala-trading-platform/apps/walk-forward
 source ../.venv/bin/activate
 python main.py --dry-run --test-duration-minutes 60 --ignore-session-window
 ```
@@ -496,7 +496,7 @@ Notes:
 Replay smoke test:
 
 ```bash
-cd /Users/rugan/balas-product-os/Tools/walk_forward
+cd /path/to/bala-trading-platform/apps/walk-forward
 source ../.venv/bin/activate
 python replay.py --self-test
 ```
@@ -504,7 +504,7 @@ python replay.py --self-test
 Replay from CSV:
 
 ```bash
-cd /Users/rugan/balas-product-os/Tools/walk_forward
+cd /path/to/bala-trading-platform/apps/walk-forward
 source ../.venv/bin/activate
 python replay.py \
   --csv /path/to/candles.csv \
@@ -515,7 +515,7 @@ python replay.py \
 Replay with explicit artifact name:
 
 ```bash
-cd /Users/rugan/balas-product-os/Tools/walk_forward
+cd /path/to/bala-trading-platform/apps/walk-forward
 source ../.venv/bin/activate
 python replay.py --self-test --run-id smoke_metrics_test
 ```
@@ -523,7 +523,7 @@ python replay.py --self-test --run-id smoke_metrics_test
 List registered strategies and position plans:
 
 ```bash
-cd /Users/rugan/balas-product-os/Tools/walk_forward
+cd /path/to/bala-trading-platform/apps/walk-forward
 source ../.venv/bin/activate
 python replay_batch.py --list-strategies
 python replay_batch.py --list-position-plans
@@ -532,7 +532,7 @@ python replay_batch.py --list-position-plans
 Strategy x position-plan matrix smoke test:
 
 ```bash
-cd /Users/rugan/balas-product-os/Tools/walk_forward
+cd /path/to/bala-trading-platform/apps/walk-forward
 source ../.venv/bin/activate
 python replay_batch.py \
   --self-test \
@@ -544,7 +544,7 @@ python replay_batch.py \
 Multi-session sweep from one CSV:
 
 ```bash
-cd /Users/rugan/balas-product-os/Tools/walk_forward
+cd /path/to/bala-trading-platform/apps/walk-forward
 source ../.venv/bin/activate
 python replay_batch.py \
   --csv /tmp/wfv_multi_session.csv \

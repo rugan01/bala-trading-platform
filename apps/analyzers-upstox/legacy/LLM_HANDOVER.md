@@ -28,16 +28,16 @@ It is intentionally an **analysis / screening / monitoring** project, not an exe
 
 ## Project layout
 
-- `/Users/rugan/Projects/upstox-analyzer/mcx_monitor`
-- `/Users/rugan/Projects/upstox-analyzer/stock_fo_monitor`
-- `/Users/rugan/Projects/upstox-analyzer/stock_intraday_monitor`
-- `/Users/rugan/Projects/upstox-analyzer/index_expiry_monitor`
-- `/Users/rugan/Projects/upstox-analyzer/output`
-- `/Users/rugan/Projects/upstox-analyzer/run_all.sh`
-- `/Users/rugan/Projects/upstox-analyzer/README.md`
+- `/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/mcx_monitor`
+- `/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/stock_fo_monitor`
+- `/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/stock_intraday_monitor`
+- `/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/index_expiry_monitor`
+- `/path/to/bala-trading-platform/data/legacy-analyzers`
+- `/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/run_all.sh`
+- `/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/README.md`
 
 Credentials are read from:
-- `/Users/rugan/balas-product-os/.env`
+- `/path/to/bala-trading-platform/.env`
 
 Expected token keys:
 - `UPSTOX_ACCESS_TOKEN`
@@ -49,7 +49,7 @@ Expected token keys:
 ### 1. MCX monitor
 
 Main file:
-- `/Users/rugan/Projects/upstox-analyzer/mcx_monitor/analyze_mcx.py`
+- `/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/mcx_monitor/analyze_mcx.py`
 
 Tracks:
 - `GOLDM`
@@ -74,16 +74,16 @@ Key behavior:
 - compares current score vs previous run using `state.json`
 
 Outputs:
-- `/Users/rugan/Projects/upstox-analyzer/output/mcx-monitor/latest_report.md`
-- `/Users/rugan/Projects/upstox-analyzer/output/mcx-monitor/state.json`
+- `/path/to/bala-trading-platform/data/legacy-analyzers/mcx-monitor/latest_report.md`
+- `/path/to/bala-trading-platform/data/legacy-analyzers/mcx-monitor/state.json`
 
 ### 2. Stock / index F&O analyzer
 
 Main file:
-- `/Users/rugan/Projects/upstox-analyzer/stock_fo_monitor/analyze_stock_fo.py`
+- `/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/stock_fo_monitor/analyze_stock_fo.py`
 
 Universe file:
-- `/Users/rugan/Projects/upstox-analyzer/stock_fo_monitor/universe_nifty_fo.txt`
+- `/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/stock_fo_monitor/universe_nifty_fo.txt`
 
 Modes:
 - `weekly`
@@ -117,13 +117,13 @@ Key behavior:
   - tail-risk note
 
 Outputs:
-- `/Users/rugan/Projects/upstox-analyzer/output/stock-fo/weekly_report.md`
-- `/Users/rugan/Projects/upstox-analyzer/output/stock-fo/monthly_report.md`
+- `/path/to/bala-trading-platform/data/legacy-analyzers/stock-fo/weekly_report.md`
+- `/path/to/bala-trading-platform/data/legacy-analyzers/stock-fo/monthly_report.md`
 
 ### 3. Stock / index intraday analyzer
 
 Main file:
-- `/Users/rugan/Projects/upstox-analyzer/stock_intraday_monitor/analyze_intraday.py`
+- `/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/stock_intraday_monitor/analyze_intraday.py`
 
 Key behavior:
 - ranks bullish / bearish intraday names using:
@@ -140,12 +140,12 @@ Key behavior:
 - includes non-0DTE small-swing index guidance after the first 30 minutes
 
 Output:
-- `/Users/rugan/Projects/upstox-analyzer/output/stock-intraday/intraday_report.md`
+- `/path/to/bala-trading-platform/data/legacy-analyzers/stock-intraday/intraday_report.md`
 
 ### 4. Index expiry monitor
 
 Main file:
-- `/Users/rugan/Projects/upstox-analyzer/index_expiry_monitor/sensex_expiry_short_straddle.py`
+- `/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/index_expiry_monitor/sensex_expiry_short_straddle.py`
 
 Purpose:
 - monitor the Thursday SENSEX expiry short-straddle “seller’s day” setup
@@ -159,8 +159,8 @@ Purpose:
   - spot stop of `±500` points from the `9:16` baseline
 
 Outputs:
-- `/Users/rugan/Projects/upstox-analyzer/output/index-expiry/sensex_expiry_report.md`
-- `/Users/rugan/Projects/upstox-analyzer/output/index-expiry/sensex_expiry_state.json`
+- `/path/to/bala-trading-platform/data/legacy-analyzers/index-expiry/sensex_expiry_report.md`
+- `/path/to/bala-trading-platform/data/legacy-analyzers/index-expiry/sensex_expiry_state.json`
 
 ## Important live-data lessons already learned
 
@@ -295,7 +295,7 @@ The SENSEX expiry monitor now does this.
 ### 7. SENSEX expiry monitor risk behavior
 
 Script:
-- `/Users/rugan/Projects/upstox-analyzer/index_expiry_monitor/sensex_expiry_short_straddle.py`
+- `/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/index_expiry_monitor/sensex_expiry_short_straddle.py`
 
 Current behavior:
 - paper-first; no live orders are placed
@@ -308,7 +308,7 @@ Current behavior:
 - default clean-entry baseline lag limit is `60` seconds via `--max-baseline-lag-seconds 60`
 - active-risk mode polls open positions every `5` seconds via `--active-risk-poll-seconds 5`, even if the normal `--poll-seconds` value is slower
 - report/state include an `Active Risk Monitor` with `MONITOR / CAUTION / DANGER / EXIT_READY / EXIT_NOW`
-- Telegram alerts use `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` from `/Users/rugan/balas-product-os/.env`
+- Telegram alerts use `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` from `/path/to/bala-trading-platform/.env`
 - default risk alerts fire at loss `₹1000/₹1500/₹1800/₹2000`, profit `₹500/₹1000/₹1500/₹2000`, and spot distance `100/50/25/0` points from either stop
 
 Live-data rule:
@@ -318,7 +318,7 @@ Live-data rule:
 - if the user has manually captured the live 09:16 baseline, use `--manual-baseline-spot`, `--manual-baseline-strike`, and `--manual-baseline-combined`; this sets only the baseline, while all monitoring still uses Upstox live quote/option-chain data
 
 Actual live position monitor:
-- script: `/Users/rugan/Projects/upstox-analyzer/index_expiry_monitor/sensex_live_position_monitor.py`
+- script: `/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/index_expiry_monitor/sensex_live_position_monitor.py`
 - use when the user has already entered a live SENSEX options position in NIMMY and wants monitoring only
 - reads Upstox short-term positions, filters open `BFO` `SENSEX` legs with non-zero quantity, and computes net live P&L
 - default monitoring command uses `--max-loss-rupees 2000 --profit-target-rupees 5000 --poll-seconds 5`
@@ -355,8 +355,8 @@ Key lesson:
 If another LLM picks this up, it should follow this order:
 
 1. Read:
-   - `/Users/rugan/Projects/upstox-analyzer/README.md`
-   - this file: `/Users/rugan/Projects/upstox-analyzer/LLM_HANDOVER.md`
+   - `/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/README.md`
+   - this file: `/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/LLM_HANDOVER.md`
 
 2. Identify which analyzer is relevant:
 - MCX intraday futures -> `mcx_monitor`
@@ -398,36 +398,36 @@ If another LLM picks this up, it should follow this order:
 
 If you want to continue this project in Claude or Gemini, give it something like this:
 
-> This project lives at `/Users/rugan/Projects/upstox-analyzer`. Read `/Users/rugan/Projects/upstox-analyzer/README.md` and `/Users/rugan/Projects/upstox-analyzer/LLM_HANDOVER.md` first. It contains three analyzers: MCX intraday futures, stock/index F&O weekly-monthly analyzer, and stock/index intraday analyzer. Upstox live quotes are the reliable live source. Be careful: the Upstox `15m` historical endpoint can return stale prior-session candles intraday, so do not trust exact intraday entry/SL/target levels unless the latest candle date is today. For live option-position checks, always resolve the exact strike and expiry from the Upstox instrument master before checking quotes. Manage wide or illiquid option spreads primarily from the underlying spot levels. Continue from the current project state without moving files or changing the output structure unless necessary.
+> This project lives at `/path/to/bala-trading-platform/apps/analyzers-upstox/legacy`. Read `/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/README.md` and `/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/LLM_HANDOVER.md` first. It contains three analyzers: MCX intraday futures, stock/index F&O weekly-monthly analyzer, and stock/index intraday analyzer. Upstox live quotes are the reliable live source. Be careful: the Upstox `15m` historical endpoint can return stale prior-session candles intraday, so do not trust exact intraday entry/SL/target levels unless the latest candle date is today. For live option-position checks, always resolve the exact strike and expiry from the Upstox instrument master before checking quotes. Manage wide or illiquid option spreads primarily from the underlying spot levels. Continue from the current project state without moving files or changing the output structure unless necessary.
 
 ## Recommended daily usage
 
 ### To run everything
 
 ```bash
-zsh "/Users/rugan/Projects/upstox-analyzer/run_all.sh"
+zsh "/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/run_all.sh"
 ```
 
 ### To run only MCX
 
 ```bash
-python3.11 "/Users/rugan/Projects/upstox-analyzer/mcx_monitor/analyze_mcx.py"   --env-file "/Users/rugan/balas-product-os/.env"   --output-dir "/Users/rugan/Projects/upstox-analyzer/output/mcx-monitor"   --max-risk-rupees 2000
+python3.11 "/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/mcx_monitor/analyze_mcx.py"   --env-file "/path/to/bala-trading-platform/.env"   --output-dir "/path/to/bala-trading-platform/data/legacy-analyzers/mcx-monitor"   --max-risk-rupees 2000
 ```
 
 ### To run stock weekly / monthly
 
 ```bash
-python3.11 "/Users/rugan/Projects/upstox-analyzer/stock_fo_monitor/analyze_stock_fo.py"   --env-file "/Users/rugan/balas-product-os/.env"   --universe-file "/Users/rugan/Projects/upstox-analyzer/stock_fo_monitor/universe_nifty_fo.txt"   --output-dir "/Users/rugan/Projects/upstox-analyzer/output/stock-fo"   --mode weekly   --top 8
+python3.11 "/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/stock_fo_monitor/analyze_stock_fo.py"   --env-file "/path/to/bala-trading-platform/.env"   --universe-file "/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/stock_fo_monitor/universe_nifty_fo.txt"   --output-dir "/path/to/bala-trading-platform/data/legacy-analyzers/stock-fo"   --mode weekly   --top 8
 ```
 
 ```bash
-python3.11 "/Users/rugan/Projects/upstox-analyzer/stock_fo_monitor/analyze_stock_fo.py"   --env-file "/Users/rugan/balas-product-os/.env"   --universe-file "/Users/rugan/Projects/upstox-analyzer/stock_fo_monitor/universe_nifty_fo.txt"   --output-dir "/Users/rugan/Projects/upstox-analyzer/output/stock-fo"   --mode monthly   --top 8
+python3.11 "/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/stock_fo_monitor/analyze_stock_fo.py"   --env-file "/path/to/bala-trading-platform/.env"   --universe-file "/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/stock_fo_monitor/universe_nifty_fo.txt"   --output-dir "/path/to/bala-trading-platform/data/legacy-analyzers/stock-fo"   --mode monthly   --top 8
 ```
 
 ### To run stock intraday
 
 ```bash
-python3.11 "/Users/rugan/Projects/upstox-analyzer/stock_intraday_monitor/analyze_intraday.py"   --env-file "/Users/rugan/balas-product-os/.env"   --universe-file "/Users/rugan/Projects/upstox-analyzer/stock_fo_monitor/universe_nifty_fo.txt"   --output-dir "/Users/rugan/Projects/upstox-analyzer/output/stock-intraday"   --top 8
+python3.11 "/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/stock_intraday_monitor/analyze_intraday.py"   --env-file "/path/to/bala-trading-platform/.env"   --universe-file "/path/to/bala-trading-platform/apps/analyzers-upstox/legacy/stock_fo_monitor/universe_nifty_fo.txt"   --output-dir "/path/to/bala-trading-platform/data/legacy-analyzers/stock-intraday"   --top 8
 ```
 
 ## Final note

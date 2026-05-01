@@ -3,12 +3,12 @@ This file is preserved as deep-reference handoff material from the earlier local
 Some paths and commands below still refer to that older setup.
 Use the current README files and `docs/operations/runbook.md` for practical repo commands.
 
-This project lives at /Users/rugan/Projects/upstox-analyzer.
+This project lives at /path/to/bala-trading-platform/apps/analyzers-upstox/legacy.
 
 Before doing anything else, read these files in order:
-1. /Users/rugan/Projects/upstox-analyzer/README.md
-2. /Users/rugan/Projects/upstox-analyzer/LLM_HANDOVER.md
-3. /Users/rugan/Projects/upstox-analyzer/SESSION_NOTES.md
+1. /path/to/bala-trading-platform/apps/analyzers-upstox/legacy/README.md
+2. /path/to/bala-trading-platform/apps/analyzers-upstox/legacy/LLM_HANDOVER.md
+3. /path/to/bala-trading-platform/apps/analyzers-upstox/legacy/SESSION_NOTES.md
 
 Important operating rules:
 - This project has three analyzers: mcx_monitor, stock_fo_monitor, and stock_intraday_monitor.
@@ -20,17 +20,17 @@ Important operating rules:
 - Do not move files or change the output folder structure unless necessary.
 
 Project root:
-- /Users/rugan/Projects/upstox-analyzer
+- /path/to/bala-trading-platform/apps/analyzers-upstox/legacy
 
 Credentials:
-- /Users/rugan/balas-product-os/.env
+- /path/to/bala-trading-platform/.env
 
 Main runner:
-- zsh /Users/rugan/Projects/upstox-analyzer/run_all.sh
+- zsh /path/to/bala-trading-platform/apps/analyzers-upstox/legacy/run_all.sh
 
 Outputs:
-- /Users/rugan/Projects/upstox-analyzer/output/mcx-monitor
-- /Users/rugan/Projects/upstox-analyzer/output/stock-fo
-- /Users/rugan/Projects/upstox-analyzer/output/stock-intraday
+- /path/to/bala-trading-platform/data/legacy-analyzers/mcx-monitor
+- /path/to/bala-trading-platform/data/legacy-analyzers/stock-fo
+- /path/to/bala-trading-platform/data/legacy-analyzers/stock-intraday
 
 When continuing the project, preserve the existing docs and append new operational learnings to SESSION_NOTES.md.
