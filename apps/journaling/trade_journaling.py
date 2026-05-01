@@ -285,7 +285,10 @@ class UpstoxClient:
                 order_timestamp=order_timestamp,
                 exchange=item['exchange'],
                 instrument_token=item.get('instrument_token'),
-                time_text=self._safe_time_text(item.get('exchange_timestamp') or item.get('order_timestamp')),
+                # For same-day trade journaling, Upstox order book time aligns with
+                # order_timestamp. In live testing, exchange_timestamp can be shifted
+                # by +05:30 for some MCX rows, which leads to wrong Notion times.
+                time_text=self._safe_time_text(item.get('order_timestamp') or item.get('exchange_timestamp')),
                 trade_id=item.get('trade_id') or item.get('order_id'),
             ))
 
