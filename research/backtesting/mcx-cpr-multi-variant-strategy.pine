@@ -1,0 +1,429 @@
+// MCX CPR Multi-Variant Strategy
+// Version: 1.0
+// Date: April 9, 2026
+// Platform: TradingView PineScript v6
+//
+// This strategy tests 5 variants of the CPR Pivot strategy across MCX commodities.
+// Best results: SILVERMIC + V3 + Evening Session + HTF Filter OFF
+//
+// Usage: Copy this code to TradingView Pine Editor and add to chart
+
+//@version=6
+strategy("MCX CPR Multi-Variant Strategy", overlay=true,
+         default_qty_type=strategy.fixed, default_qty_value=2,
+         initial_capital=500000, commission_type=strategy.commission.percent,
+         commission_value=0.03, slippage=2,
+         process_orders_on_close=false, calc_on_every_tick=false)
+
+// ============================================================================
+// STRATEGY VARIANT SELECTION
+// ============================================================================
+
+variantOptions = input.string("V3 - CPR Band (TC/BC)", "Strategy Variant",
+     options=["V1 - Standard Pivot (R1/S1)", "V2 - Extended Pivot (R2/S2)",
+              "V3 - CPR Band (TC/BC)", "V4 - Camarilla (R3/S3)", "V5 - Extended Target"],
+     group="Strategy Selection")
+
+// ============================================================================
+// SESSION SETTINGS
+// ============================================================================
+
+sessionOptions = input.string("Full Day (09:00-23:00)", "Session Window",
+     options=["Full Day (09:00-23:00)", "Evening (17:00-21:30)",
+              "Morning Start (10:00-21:30)", "Afternoon Start (12:00-21:30)",
+              "Extended Evening (17:00-23:00)"],
+     group="Session")
+
+i_forceCloseMin = input.int(5, "Force Close Minutes Before End", minval=1, maxval=30, group="Session")
+
+// ============================================================================
+// WEEKDAY FILTER
+// ============================================================================
+
+i_useWeekdayFilter = input.bool(false, "Enable Weekday Filter", group="Weekday Filter")
+i_monday = input.bool(true, "Monday", group="Weekday Filter")
+i_tuesday = input.bool(true, "Tuesday", group="Weekday Filter")
+i_wednesday = input.bool(true, "Wednesday", group="Weekday Filter")
+i_thursday = input.bool(true, "Thursday", group="Weekday Filter")
+i_friday = input.bool(true, "Friday", group="Weekday Filter")
+
+// ============================================================================
+// HTF FILTER SETTINGS
+// ============================================================================
+
+i_useHTFFilter = input.bool(false, "Use HTF EMA Filter", group="HTF Filter")
+i_emaLength = input.int(200, "EMA Length", minval=10, maxval=500, group="HTF Filter")
+i_htfTimeframe1 = input.timeframe("D", "HTF 1 (Daily)", group="HTF Filter")
+i_htfTimeframe2 = input.timeframe("120", "HTF 2 (2H)", group="HTF Filter")
+
+// ============================================================================
+// ENTRY SETTINGS
+// ============================================================================
+
+i_touchTolerance = input.float(0.15, "Touch Tolerance %", minval=0.01, maxval=0.5, step=0.01, group="Entry")
+i_minBarsBetweenTouches = input.int(3, "Min Bars Between Touches", minval=1, maxval=10, group="Entry")
+i_requireSecondTouch = input.bool(true, "Require 2nd Touch", group="Entry")
+
+// ============================================================================
+// STOP LOSS SETTINGS
+// ============================================================================
+
+i_slMethod = input.string("SuperTrend", "SL Method", options=["SuperTrend", "Fixed Pct", "ATR Multiple"], group="Stop Loss")
+i_stLength = input.int(5, "SuperTrend Length", minval=1, group="Stop Loss")
+i_stFactor = input.float(3.0, "SuperTrend Factor", minval=0.5, maxval=5.0, step=0.1, group="Stop Loss")
+i_fixedSLPct = input.float(0.8, "Fixed SL Pct", minval=0.1, maxval=3.0, step=0.1, group="Stop Loss")
+i_atrMultiple = input.float(2.0, "ATR Multiple", minval=0.5, maxval=5.0, step=0.5, group="Stop Loss")
+i_atrLength = input.int(14, "ATR Length", minval=5, maxval=50, group="Stop Loss")
+
+// ============================================================================
+// EXIT SETTINGS
+// ============================================================================
+
+i_exitMethod = input.string("Partial Trail", "Exit Method",
+     options=["Partial Trail", "Full Target", "Trail Only", "Session Close"],
+     group="Exit")
+i_partialExitPct = input.float(50.0, "Partial Exit Pct", minval=10, maxval=90, step=10, group="Exit")
+i_trailFactor = input.float(1.5, "Trail SuperTrend Factor", minval=0.5, maxval=3.0, step=0.1, group="Exit")
+
+// ============================================================================
+// TRADE MANAGEMENT
+// ============================================================================
+
+i_maxTradesPerDay = input.int(2, "Max Trades Per Day", minval=1, maxval=5, group="Trade Mgmt")
+
+// ============================================================================
+// SESSION TIME PARSING
+// ============================================================================
+
+var int sessStartH = 9
+var int sessStartM = 0
+var int sessEndH = 23
+var int sessEndM = 0
+
+if sessionOptions == "Full Day (09:00-23:00)"
+    sessStartH := 9
+    sessStartM := 0
+    sessEndH := 23
+    sessEndM := 0
+else if sessionOptions == "Evening (17:00-21:30)"
+    sessStartH := 17
+    sessStartM := 0
+    sessEndH := 21
+    sessEndM := 30
+else if sessionOptions == "Morning Start (10:00-21:30)"
+    sessStartH := 10
+    sessStartM := 0
+    sessEndH := 21
+    sessEndM := 30
+else if sessionOptions == "Afternoon Start (12:00-21:30)"
+    sessStartH := 12
+    sessStartM := 0
+    sessEndH := 21
+    sessEndM := 30
+else if sessionOptions == "Extended Evening (17:00-23:00)"
+    sessStartH := 17
+    sessStartM := 0
+    sessEndH := 23
+    sessEndM := 0
+
+// ============================================================================
+// CPR & PIVOT CALCULATIONS
+// ============================================================================
+
+prevH = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_on)
+prevL = request.security(syminfo.tickerid, "D", low[1], lookahead=barmerge.lookahead_on)
+prevC = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_on)
+
+pivot = (prevH + prevL + prevC) / 3
+bc = (prevH + prevL) / 2
+tc = (pivot - bc) + pivot
+r1 = (2 * pivot) - prevL
+s1 = (2 * pivot) - prevH
+r2 = pivot + (prevH - prevL)
+s2 = pivot - (prevH - prevL)
+
+range_hl = prevH - prevL
+cam_r3 = prevC + range_hl * 1.1 / 4
+cam_s3 = prevC - range_hl * 1.1 / 4
+
+// ============================================================================
+// GET LEVELS BASED ON VARIANT
+// ============================================================================
+
+var float longEntryLevel = na
+var float shortEntryLevel = na
+var float longTargetLevel = na
+var float shortTargetLevel = na
+
+if variantOptions == "V1 - Standard Pivot (R1/S1)"
+    longEntryLevel := s1
+    shortEntryLevel := r1
+    longTargetLevel := pivot
+    shortTargetLevel := pivot
+else if variantOptions == "V2 - Extended Pivot (R2/S2)"
+    longEntryLevel := s2
+    shortEntryLevel := r2
+    longTargetLevel := s1
+    shortTargetLevel := r1
+else if variantOptions == "V3 - CPR Band (TC/BC)"
+    longEntryLevel := bc
+    shortEntryLevel := tc
+    longTargetLevel := tc
+    shortTargetLevel := bc
+else if variantOptions == "V4 - Camarilla (R3/S3)"
+    longEntryLevel := cam_s3
+    shortEntryLevel := cam_r3
+    longTargetLevel := cam_r3
+    shortTargetLevel := cam_s3
+else if variantOptions == "V5 - Extended Target"
+    longEntryLevel := bc
+    shortEntryLevel := tc
+    longTargetLevel := r1
+    shortTargetLevel := s1
+
+// ============================================================================
+// HTF TREND FILTER
+// ============================================================================
+
+ema_htf1 = request.security(syminfo.tickerid, i_htfTimeframe1, ta.ema(close, i_emaLength), lookahead=barmerge.lookahead_on)
+ema_htf2 = request.security(syminfo.tickerid, i_htfTimeframe2, ta.ema(close, i_emaLength), lookahead=barmerge.lookahead_on)
+
+htfBullish = close > ema_htf1 and close > ema_htf2
+htfBearish = close < ema_htf1 and close < ema_htf2
+
+htfLongOK = not i_useHTFFilter or htfBullish
+htfShortOK = not i_useHTFFilter or htfBearish
+
+// ============================================================================
+// SUPERTREND CALCULATION
+// ============================================================================
+
+atrEntry = ta.atr(i_stLength)
+upEntry = hl2 - (i_stFactor * atrEntry)
+dnEntry = hl2 + (i_stFactor * atrEntry)
+
+var float stUpEntry = na
+var float stDnEntry = na
+stUpEntry := close[1] > nz(stUpEntry[1]) ? math.max(upEntry, nz(stUpEntry[1])) : upEntry
+stDnEntry := close[1] < nz(stDnEntry[1]) ? math.min(dnEntry, nz(stDnEntry[1])) : dnEntry
+
+var int stTrendEntry = 1
+stTrendEntry := close > nz(stDnEntry[1]) ? 1 : close < nz(stUpEntry[1]) ? -1 : nz(stTrendEntry[1])
+stEntry = stTrendEntry == 1 ? stUpEntry : stDnEntry
+
+atrTrail = ta.atr(i_stLength)
+upTrail = hl2 - (i_trailFactor * atrTrail)
+dnTrail = hl2 + (i_trailFactor * atrTrail)
+
+var float stUpTrail = na
+var float stDnTrail = na
+stUpTrail := close[1] > nz(stUpTrail[1]) ? math.max(upTrail, nz(stUpTrail[1])) : upTrail
+stDnTrail := close[1] < nz(stDnTrail[1]) ? math.min(dnTrail, nz(stDnTrail[1])) : dnTrail
+
+var int stTrendTrail = 1
+stTrendTrail := close > nz(stDnTrail[1]) ? 1 : close < nz(stUpTrail[1]) ? -1 : nz(stTrendTrail[1])
+stTrail = stTrendTrail == 1 ? stUpTrail : stDnTrail
+
+// ============================================================================
+// STOP LOSS CALCULATION
+// ============================================================================
+
+atrValue = ta.atr(i_atrLength)
+
+getLongSL() =>
+    if i_slMethod == "SuperTrend"
+        stTrendEntry == 1 and stEntry < close ? stEntry : longEntryLevel * (1 - i_fixedSLPct / 100)
+    else if i_slMethod == "ATR Multiple"
+        close - (atrValue * i_atrMultiple)
+    else
+        longEntryLevel * (1 - i_fixedSLPct / 100)
+
+getShortSL() =>
+    if i_slMethod == "SuperTrend"
+        stTrendEntry == -1 and stEntry > close ? stEntry : shortEntryLevel * (1 + i_fixedSLPct / 100)
+    else if i_slMethod == "ATR Multiple"
+        close + (atrValue * i_atrMultiple)
+    else
+        shortEntryLevel * (1 + i_fixedSLPct / 100)
+
+// ============================================================================
+// TOUCH DETECTION
+// ============================================================================
+
+isTouching(level, tol) =>
+    tolerance = level * tol / 100
+    low <= level + tolerance and high >= level - tolerance
+
+var int lastLongTouchBar = na
+var int longTouchCount = 0
+longTouch = isTouching(longEntryLevel, i_touchTolerance)
+
+if longTouch
+    if na(lastLongTouchBar) or (bar_index - lastLongTouchBar >= i_minBarsBetweenTouches)
+        longTouchCount := longTouchCount + 1
+        lastLongTouchBar := bar_index
+
+var int lastShortTouchBar = na
+var int shortTouchCount = 0
+shortTouch = isTouching(shortEntryLevel, i_touchTolerance)
+
+if shortTouch
+    if na(lastShortTouchBar) or (bar_index - lastShortTouchBar >= i_minBarsBetweenTouches)
+        shortTouchCount := shortTouchCount + 1
+        lastShortTouchBar := bar_index
+
+newDay = ta.change(time("D")) != 0
+if newDay
+    longTouchCount := 0
+    shortTouchCount := 0
+    lastLongTouchBar := na
+    lastShortTouchBar := na
+
+longTouchValid = i_requireSecondTouch ? (longTouch and longTouchCount == 2) : longTouch
+shortTouchValid = i_requireSecondTouch ? (shortTouch and shortTouchCount == 2) : shortTouch
+
+// ============================================================================
+// SESSION & WEEKDAY FILTERS
+// ============================================================================
+
+currentHour = hour(time, "Asia/Kolkata")
+currentMinute = minute(time, "Asia/Kolkata")
+currentDOW = dayofweek(time, "Asia/Kolkata")
+
+sessionStartMinutes = sessStartH * 60 + sessStartM
+sessionEndMinutes = sessEndH * 60 + sessEndM
+currentMinutes = currentHour * 60 + currentMinute
+
+inSession = currentMinutes >= sessionStartMinutes and currentMinutes < sessionEndMinutes
+forceCloseMinutes = sessionEndMinutes - i_forceCloseMin
+forceCloseTime = currentMinutes >= forceCloseMinutes and currentMinutes < sessionEndMinutes
+
+mondayOK = currentDOW == dayofweek.monday and i_monday
+tuesdayOK = currentDOW == dayofweek.tuesday and i_tuesday
+wednesdayOK = currentDOW == dayofweek.wednesday and i_wednesday
+thursdayOK = currentDOW == dayofweek.thursday and i_thursday
+fridayOK = currentDOW == dayofweek.friday and i_friday
+
+weekdayOK = not i_useWeekdayFilter or mondayOK or tuesdayOK or wednesdayOK or thursdayOK or fridayOK
+
+var int tradesToday = 0
+if newDay
+    tradesToday := 0
+
+canTrade = inSession and not forceCloseTime and tradesToday < i_maxTradesPerDay and weekdayOK
+
+// ============================================================================
+// ENTRY CONDITIONS
+// ============================================================================
+
+longCondition = longTouchValid and htfLongOK and canTrade and strategy.position_size == 0
+shortCondition = shortTouchValid and htfShortOK and canTrade and strategy.position_size == 0
+
+// ============================================================================
+// TRADE STATE
+// ============================================================================
+
+var float entryPrice = na
+var float initialSL = na
+var float target1 = na
+var bool partialExitDone = false
+
+// ============================================================================
+// ENTRY EXECUTION
+// ============================================================================
+
+if longCondition
+    entryPrice := close
+    initialSL := getLongSL()
+    target1 := longTargetLevel
+    partialExitDone := false
+    tradesToday := tradesToday + 1
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Long SL", "Long", stop=initialSL)
+
+if shortCondition
+    entryPrice := close
+    initialSL := getShortSL()
+    target1 := shortTargetLevel
+    partialExitDone := false
+    tradesToday := tradesToday + 1
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Short SL", "Short", stop=initialSL)
+
+// ============================================================================
+// EXIT LOGIC
+// ============================================================================
+
+inLong = strategy.position_size > 0
+inShort = strategy.position_size < 0
+
+longTargetHit = inLong and not partialExitDone and high >= target1
+shortTargetHit = inShort and not partialExitDone and low <= target1
+
+if i_exitMethod == "Partial Trail"
+    if longTargetHit
+        strategy.close("Long", qty_percent=i_partialExitPct, comment="T1")
+        partialExitDone := true
+        strategy.exit("Long Trail", "Long", stop=stTrail)
+    if shortTargetHit
+        strategy.close("Short", qty_percent=i_partialExitPct, comment="T1")
+        partialExitDone := true
+        strategy.exit("Short Trail", "Short", stop=stTrail)
+    if inLong and partialExitDone
+        strategy.exit("Long Trail", "Long", stop=stTrail)
+    if inShort and partialExitDone
+        strategy.exit("Short Trail", "Short", stop=stTrail)
+
+else if i_exitMethod == "Full Target"
+    if longTargetHit
+        strategy.close("Long", comment="Target")
+    if shortTargetHit
+        strategy.close("Short", comment="Target")
+
+else if i_exitMethod == "Trail Only"
+    if inLong
+        strategy.exit("Long Trail", "Long", stop=stTrail)
+    if inShort
+        strategy.exit("Short Trail", "Short", stop=stTrail)
+
+if forceCloseTime and (inLong or inShort)
+    strategy.close_all(comment="EOD")
+
+// ============================================================================
+// PLOTTING
+// ============================================================================
+
+plot(longEntryLevel, "Long Entry", color=color.new(color.green, 30), linewidth=2)
+plot(shortEntryLevel, "Short Entry", color=color.new(color.red, 30), linewidth=2)
+plot(longTargetLevel, "Long Target", color=color.new(color.green, 60), linewidth=1, style=plot.style_circles)
+plot(shortTargetLevel, "Short Target", color=color.new(color.red, 60), linewidth=1, style=plot.style_circles)
+plot(pivot, "Pivot", color=color.new(color.gray, 50), linewidth=1)
+plot(stEntry, "SuperTrend", color=stTrendEntry == 1 ? color.green : color.red, linewidth=1)
+
+plotshape(longCondition, "Long", shape.triangleup, location.belowbar, color.green, size=size.normal)
+plotshape(shortCondition, "Short", shape.triangledown, location.abovebar, color.red, size=size.normal)
+
+bgcolor(inSession and weekdayOK ? color.new(color.blue, 95) : na)
+bgcolor(forceCloseTime ? color.new(color.orange, 90) : na)
+
+// ============================================================================
+// INFO TABLE
+// ============================================================================
+
+var table infoTbl = table.new(position.top_right, 2, 6, bgcolor=color.new(color.black, 80))
+
+if barstate.islast
+    table.cell(infoTbl, 0, 0, "Variant", text_color=color.white, text_size=size.small)
+    table.cell(infoTbl, 1, 0, variantOptions, text_color=color.yellow, text_size=size.small)
+    table.cell(infoTbl, 0, 1, "Session", text_color=color.white, text_size=size.small)
+    table.cell(infoTbl, 1, 1, sessionOptions, text_color=color.white, text_size=size.small)
+    table.cell(infoTbl, 0, 2, "HTF", text_color=color.white, text_size=size.small)
+    htfStatus = not i_useHTFFilter ? "OFF" : htfBullish ? "BULL" : htfBearish ? "BEAR" : "FLAT"
+    htfCol = not i_useHTFFilter ? color.gray : htfBullish ? color.green : htfBearish ? color.red : color.yellow
+    table.cell(infoTbl, 1, 2, htfStatus, text_color=htfCol, text_size=size.small)
+    table.cell(infoTbl, 0, 3, "Long Touch", text_color=color.white, text_size=size.small)
+    table.cell(infoTbl, 1, 3, str.tostring(longTouchCount), text_color=longTouchCount >= 2 ? color.green : color.white, text_size=size.small)
+    table.cell(infoTbl, 0, 4, "Short Touch", text_color=color.white, text_size=size.small)
+    table.cell(infoTbl, 1, 4, str.tostring(shortTouchCount), text_color=shortTouchCount >= 2 ? color.red : color.white, text_size=size.small)
+    table.cell(infoTbl, 0, 5, "Trades", text_color=color.white, text_size=size.small)
+    table.cell(infoTbl, 1, 5, str.tostring(tradesToday) + "/" + str.tostring(i_maxTradesPerDay), text_color=color.white, text_size=size.small)

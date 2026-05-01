@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.bala.upstox-token-refresh</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/rugan/balas-product-os/Tools/.venv/bin/python</string>
+        <string>/Users/rugan/balas-product-os/Tools/upstox_token_refresh.py</string>
+        <string>--notify</string>
+        <string>--if-needed</string>
+    </array>
+
+    <!-- Primary: Run at 8:00 AM daily -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>8</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <!-- Backup: Also run every 2 hours (7200 seconds) in case 8 AM was missed -->
+    <key>StartInterval</key>
+    <integer>7200</integer>
+
+    <!-- Run on wake/login to catch up if Mac was asleep -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/rugan/Library/Logs/upstox_token_refresh_stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/rugan/Library/Logs/upstox_token_refresh_stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    </dict>
+</dict>
+</plist>

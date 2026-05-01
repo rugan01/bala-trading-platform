@@ -1,0 +1,18 @@
+{
+  "defaults": {
+    "strategy_id": "silvermic_cpr_band_v3",
+    "position_plan_id": "partial_t1_trail",
+    "warmup_bars": 60,
+    "instrument_key": "REPLAY|SILVERMIC",
+    "trading_symbol": "SILVERMIC REPLAY",
+    "segment": "MCX_FO",
+    "underlying": "SILVERMIC"
+  },
+  "runs": [
+    {
+      "run_id": "silvermic_sample_day",
+      "csv": "/path/to/silvermic_15m_candles.csv",
+      "session_date": "2026-04-17"
+    }
+  ]
+}

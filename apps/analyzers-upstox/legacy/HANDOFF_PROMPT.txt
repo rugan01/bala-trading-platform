@@ -1,0 +1,31 @@
+This project lives at /Users/rugan/Projects/upstox-analyzer.
+
+Before doing anything else, read these files in order:
+1. /Users/rugan/Projects/upstox-analyzer/README.md
+2. /Users/rugan/Projects/upstox-analyzer/LLM_HANDOVER.md
+3. /Users/rugan/Projects/upstox-analyzer/SESSION_NOTES.md
+
+Important operating rules:
+- This project has three analyzers: mcx_monitor, stock_fo_monitor, and stock_intraday_monitor.
+- Use Upstox live quote API as the source of truth for real-time checks.
+- Be careful: the Upstox 15m historical endpoint for stocks can return stale prior-session candles intraday.
+- Do not trust exact intraday entry/SL/target levels unless the latest 15m candle is from today.
+- For live option-position checks, always resolve the exact strike and expiry from the Upstox instrument master before checking quotes.
+- If an option book is wide or illiquid, manage the trade primarily from the underlying spot levels rather than only the option prices.
+- Do not move files or change the output folder structure unless necessary.
+
+Project root:
+- /Users/rugan/Projects/upstox-analyzer
+
+Credentials:
+- /Users/rugan/balas-product-os/.env
+
+Main runner:
+- zsh /Users/rugan/Projects/upstox-analyzer/run_all.sh
+
+Outputs:
+- /Users/rugan/Projects/upstox-analyzer/output/mcx-monitor
+- /Users/rugan/Projects/upstox-analyzer/output/stock-fo
+- /Users/rugan/Projects/upstox-analyzer/output/stock-intraday
+
+When continuing the project, preserve the existing docs and append new operational learnings to SESSION_NOTES.md.

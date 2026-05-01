@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.rugan.mcx-monitor</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/usr/bin/env</string>
+      <string>python3.11</string>
+      <string>/Users/rugan/Projects/upstox-analyzer/mcx_monitor/analyze_mcx.py</string>
+      <string>--env-file</string>
+      <string>/Users/rugan/balas-product-os/.env</string>
+      <string>--output-dir</string>
+      <string>/Users/rugan/Projects/upstox-analyzer/output/mcx-monitor</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>900</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/rugan/Projects/upstox-analyzer/output/mcx-monitor/launchd.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/rugan/Projects/upstox-analyzer/output/mcx-monitor/launchd.stderr.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/rugan/Projects/upstox-analyzer/mcx_monitor</string>
+  </dict>
+</plist>

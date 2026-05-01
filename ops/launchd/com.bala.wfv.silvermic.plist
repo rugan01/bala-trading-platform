@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.bala.wfv.silvermic</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Use same venv Python as the token refresh script -->
+        <string>/Users/rugan/balas-product-os/Tools/.venv/bin/python</string>
+        <string>/Users/rugan/balas-product-os/Tools/walk_forward/main.py</string>
+    </array>
+
+    <!--
+        Start at 16:50 IST = 11:20 UTC (IST = UTC+5:30)
+        Weekdays only (1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri)
+    -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Weekday</key><integer>1</integer>
+            <key>Hour</key><integer>11</integer>
+            <key>Minute</key><integer>20</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>2</integer>
+            <key>Hour</key><integer>11</integer>
+            <key>Minute</key><integer>20</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>3</integer>
+            <key>Hour</key><integer>11</integer>
+            <key>Minute</key><integer>20</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>4</integer>
+            <key>Hour</key><integer>11</integer>
+            <key>Minute</key><integer>20</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>5</integer>
+            <key>Hour</key><integer>11</integer>
+            <key>Minute</key><integer>20</integer>
+        </dict>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/rugan/balas-product-os/Tools/walk_forward</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/rugan/Library/Logs/walk_forward/launchd_stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/rugan/Library/Logs/walk_forward/launchd_stderr.log</string>
+
+    <!-- Restart if it crashes, but not at EOD (it exits cleanly at 23:30) -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>TZ</key>
+        <string>Asia/Kolkata</string>
+    </dict>
+</dict>
+</plist>
