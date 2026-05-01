@@ -2307,90 +2307,67 @@ class TradeProcessor:
             trade_entries.append(trade_entry)
             return trade_entries
 
-        # Case 2: Both buys and sells → Match using FIFO
-        # Determine direction based on first order chronologically
-        orders_by_time = sorted(orders, key=lambda x: x.order_timestamp)
-        first_order = orders_by_time[0]
+        # Case 2: Both buys and sells → process chronologically, allowing the
+        # net position to flatten and flip intraday.
+        orders_by_time = sorted(
+            orders,
+            key=lambda item: (
+                item.order_timestamp,
+                item.order_id,
+                item.trade_id or item.order_id,
+            ),
+        )
 
-        if first_order.transaction_type == 'BUY':
-            direction = 'Long'
-            entry_orders = buys
-            exit_orders = sells
-        else:
-            direction = 'Short'
-            entry_orders = sells
-            exit_orders = buys
-
-        # Sort entries and exits by time for FIFO matching
-        entry_orders_sorted = sorted(entry_orders, key=lambda x: x.order_timestamp)
-        exit_orders_sorted = sorted(exit_orders, key=lambda x: x.order_timestamp)
-
-        # Calculate fees for each entry order individually
-        entry_fees_map = {}  # order_id -> fees
-        for entry_order in entry_orders_sorted:
+        order_fees_per_unit: dict[str, float] = {}
+        for order in orders_by_time:
             if instrument_token:
-                entry_fees = self.upstox.calculate_brokerage(
-                    instrument_token, entry_order.quantity,
-                    'BUY' if direction == 'Long' else 'SELL',
-                    entry_order.average_price
+                total_fees = self.upstox.calculate_brokerage(
+                    instrument_token,
+                    order.quantity,
+                    order.transaction_type,
+                    order.average_price,
                 )
             else:
-                entry_fees = 25.0  # Fallback estimate
-            entry_fees_map[entry_order.order_id] = entry_fees
+                total_fees = 25.0
+            order_fees_per_unit[order.order_id] = total_fees / order.quantity if order.quantity else 0.0
 
-        # Build entry queue for FIFO matching
-        # Each item: [remaining_qty, price, timestamp, order_id, fees_per_unit]
-        entry_queue = []
-        for entry_order in entry_orders_sorted:
-            fees_per_unit = entry_fees_map[entry_order.order_id] / entry_order.quantity
-            entry_queue.append({
-                'remaining_qty': entry_order.quantity,
-                'price': entry_order.average_price,
-                'timestamp': entry_order.order_timestamp,
-                'time_text': self._order_time_text(entry_order) if entry_order.time_text else 'N/A',
-                'order_id': entry_order.order_id,
-                'trade_id': self._source_id_for_order(entry_order),
-                'fees_per_unit': fees_per_unit,
-                'original_qty': entry_order.quantity,
-            })
+        open_direction: Optional[str] = None
+        entry_queue: list[dict] = []
 
-        # FIFO matching: for each exit, consume from entry queue
-        for exit_order in exit_orders_sorted:
-            exit_qty_remaining = exit_order.quantity
-            exit_price = exit_order.average_price
-            exit_time = exit_order.order_timestamp
-            exit_time_text = self._order_time_text(exit_order) if exit_order.time_text else 'N/A'
+        for order in orders_by_time:
+            order_direction = 'Long' if order.transaction_type == 'BUY' else 'Short'
+            order_time_text = self._order_time_text(order)
+            qty_remaining = order.quantity
 
-            # Calculate exit fees for this order
-            if instrument_token:
-                exit_fees_total = self.upstox.calculate_brokerage(
-                    instrument_token, exit_order.quantity,
-                    'SELL' if direction == 'Long' else 'BUY',
-                    exit_price
-                )
-            else:
-                exit_fees_total = 25.0  # Fallback estimate
-            exit_fees_per_unit = exit_fees_total / exit_order.quantity
+            # Flat book or same-side add: this order opens/adds to the current leg.
+            if open_direction is None or order_direction == open_direction:
+                open_direction = order_direction
+                entry_queue.append({
+                    'remaining_qty': qty_remaining,
+                    'price': order.average_price,
+                    'timestamp': order.order_timestamp,
+                    'time_text': order_time_text,
+                    'order_id': order.order_id,
+                    'trade_id': self._source_id_for_order(order),
+                    'fees_per_unit': order_fees_per_unit[order.order_id],
+                })
+                continue
 
-            # Match against entries in FIFO order
-            while exit_qty_remaining > 0 and entry_queue:
+            # Opposite-side order: first close existing FIFO entries.
+            while qty_remaining > 0 and entry_queue:
                 entry = entry_queue[0]
+                match_qty = min(qty_remaining, entry['remaining_qty'])
 
-                # Determine how much to match
-                match_qty = min(exit_qty_remaining, entry['remaining_qty'])
-
-                # Calculate P&L for this match
-                if direction == 'Long':
-                    pnl = (exit_price - entry['price']) * pnl_multiplier * match_qty
+                if open_direction == 'Long':
+                    pnl = (order.average_price - entry['price']) * pnl_multiplier * match_qty
                 else:
-                    pnl = (entry['price'] - exit_price) * pnl_multiplier * match_qty
+                    pnl = (entry['price'] - order.average_price) * pnl_multiplier * match_qty
 
-                # Calculate fees for this match
-                entry_fees_for_match = entry['fees_per_unit'] * match_qty
-                exit_fees_for_match = exit_fees_per_unit * match_qty
-                tranche_fees = entry_fees_for_match + exit_fees_for_match
+                tranche_fees = (
+                    entry['fees_per_unit'] * match_qty +
+                    order_fees_per_unit[order.order_id] * match_qty
+                )
 
-                # Determine outcome
                 if pnl > 0:
                     outcome = 'Win'
                 elif pnl < 0:
@@ -2398,25 +2375,20 @@ class TradeProcessor:
                 else:
                     outcome = 'Breakeven'
 
-                # Determine timeframe
-                if entry['timestamp'].date() == exit_time.date():
-                    timeframe = 'Intraday'
-                else:
-                    timeframe = 'Positional'
-
-                # Create trade entry for this FIFO match
+                timeframe = 'Intraday' if entry['timestamp'].date() == order.order_timestamp.date() else 'Positional'
                 display_match_qty = self._display_quantity(match_qty, exchange, parsed, inst_details)
+
                 trade_entry = TradeEntry(
                     symbol=parsed.base_symbol,
-                    direction=direction,
+                    direction=open_direction,
                     entry_date=entry['timestamp'].date(),
                     entry_time=entry['time_text'],
-                    exit_date=exit_time.date(),
-                    exit_time=exit_time_text,
+                    exit_date=order.order_timestamp.date(),
+                    exit_time=order_time_text,
                     entry_price=round(entry['price'], 2),
-                    exit_price=round(exit_price, 2),
+                    exit_price=round(order.average_price, 2),
                     stop_loss=stop_loss,
-                    target=round(exit_price, 2),
+                    target=round(order.average_price, 2),
                     quantity=display_match_qty,
                     instrument_type=instrument_type,
                     lot_size=display_lot_size,
@@ -2430,52 +2402,66 @@ class TradeProcessor:
                     option_type=parsed.option_type,
                     option_strike=parsed.strike,
                     entry_source_ids=[entry['trade_id']],
-                    exit_source_ids=[self._source_id_for_order(exit_order)],
+                    exit_source_ids=[self._source_id_for_order(order)],
                 )
                 self._ensure_trade_journal_key(trade_entry)
                 trade_entries.append(trade_entry)
 
-                # Update quantities
-                exit_qty_remaining -= match_qty
+                qty_remaining -= match_qty
                 entry['remaining_qty'] -= match_qty
-
-                # Remove fully consumed entry from queue
                 if entry['remaining_qty'] <= 0:
                     entry_queue.pop(0)
 
-        # Check for unmatched entry quantity (remaining open positions)
-        for entry in entry_queue:
-            if entry['remaining_qty'] > 0:
-                remaining_qty = entry['remaining_qty']
-                remaining_fees = entry['fees_per_unit'] * remaining_qty
+            # If the order over-closes the prior leg, the remainder flips into a
+            # fresh position in the new direction.
+            if qty_remaining > 0:
+                open_direction = order_direction
+                entry_queue = [{
+                    'remaining_qty': qty_remaining,
+                    'price': order.average_price,
+                    'timestamp': order.order_timestamp,
+                    'time_text': order_time_text,
+                    'order_id': order.order_id,
+                    'trade_id': self._source_id_for_order(order),
+                    'fees_per_unit': order_fees_per_unit[order.order_id],
+                }]
+            elif not entry_queue:
+                open_direction = None
 
-                display_remaining_qty = self._display_quantity(remaining_qty, exchange, parsed, inst_details)
-                open_entry = TradeEntry(
-                    symbol=parsed.base_symbol,
-                    direction=direction,
-                    entry_date=entry['timestamp'].date(),
-                    entry_time=entry['time_text'],
-                    entry_price=round(entry['price'], 2),
-                    quantity=display_remaining_qty,
-                    instrument_type=instrument_type,
-                    lot_size=display_lot_size,
-                    fees=round(remaining_fees, 2),
-                    raw_quantity=remaining_qty,
-                    stop_loss=stop_loss,
-                    exit_date=None,
-                    exit_time=None,
-                    exit_price=None,
-                    pnl=0.0,
-                    outcome='Open',
-                    timeframe='Positional',
-                    status='Open',
-                    expiry_date=expiry_date,
-                    option_type=parsed.option_type,
-                    option_strike=parsed.strike,
-                    entry_source_ids=[entry['trade_id']],
-                )
-                self._ensure_trade_journal_key(open_entry)
-                trade_entries.append(open_entry)
+        # Any remaining queue entries are still-open positions.
+        for entry in entry_queue:
+            if entry['remaining_qty'] <= 0:
+                continue
+
+            remaining_qty = entry['remaining_qty']
+            remaining_fees = entry['fees_per_unit'] * remaining_qty
+            display_remaining_qty = self._display_quantity(remaining_qty, exchange, parsed, inst_details)
+            open_entry = TradeEntry(
+                symbol=parsed.base_symbol,
+                direction=open_direction or 'Long',
+                entry_date=entry['timestamp'].date(),
+                entry_time=entry['time_text'],
+                entry_price=round(entry['price'], 2),
+                quantity=display_remaining_qty,
+                instrument_type=instrument_type,
+                lot_size=display_lot_size,
+                fees=round(remaining_fees, 2),
+                raw_quantity=remaining_qty,
+                stop_loss=stop_loss,
+                exit_date=None,
+                exit_time=None,
+                exit_price=None,
+                pnl=0.0,
+                outcome='Open',
+                timeframe='Positional',
+                status='Open',
+                expiry_date=expiry_date,
+                option_type=parsed.option_type,
+                option_strike=parsed.strike,
+                entry_source_ids=[entry['trade_id']],
+            )
+            self._ensure_trade_journal_key(open_entry)
+            trade_entries.append(open_entry)
 
         return trade_entries
 
