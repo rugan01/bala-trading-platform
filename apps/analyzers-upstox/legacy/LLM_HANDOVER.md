@@ -1,3 +1,9 @@
+# Historical LLM Handover Guide
+
+This file is preserved as a deep implementation handoff snapshot from the earlier local workspace.
+Some paths, commands, and assumptions are historical.
+Use the current README files and `docs/operations/runbook.md` for public-facing instructions.
+
 # LLM Handover Guide
 
 This document is the operational handoff for continuing this project in another LLM such as Claude, Gemini, or another Codex thread.

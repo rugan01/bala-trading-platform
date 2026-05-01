@@ -1,3 +1,9 @@
+# Historical Source Snapshot
+
+This file is an archived source snapshot from the earlier local workspace.
+
+It is preserved for design history and context. Some commands and paths in this file still point to the older private local setup and should not be treated as the primary public-facing instructions.
+
 # Trading Platform
 
 Broker-agnostic trading platform scaffold for:

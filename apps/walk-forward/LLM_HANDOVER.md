@@ -1,3 +1,9 @@
+# Historical Walk-Forward LLM Handover
+
+This file preserves detailed build history and migration context from the earlier local workspace.
+Some commands and paths are historical.
+Use `apps/walk-forward/README.md` and `docs/operations/runbook.md` for the current public-facing instructions.
+
 # Walk-Forward LLM Handover
 
 This file is the quickest way for another LLM to pick up the `SILVERMIC` walk-forward validator without re-discovering the same runtime issues.

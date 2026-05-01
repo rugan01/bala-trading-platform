@@ -1,8 +1,8 @@
 # Bala Trading Platform
 
-Private monorepo staging area for Bala's trading tooling before GitHub publication.
+Public monorepo for Bala's reusable trading tooling.
 
-This repository is the new code-centric source of truth for the reusable trading stack:
+This repository is the code-centric source of truth for the reusable trading stack:
 - journaling and recovery
 - morning brief / live analysis / EOD learning loop
 - walk-forward paper validation
@@ -12,18 +12,18 @@ This repository is the new code-centric source of truth for the reusable trading
 
 ## Current Status
 
-This repo is the **organized staging monorepo**.
+This repo is the **organized monorepo** for the reusable codebase.
 
-The existing operational workspace at `/Users/rugan/balas-product-os` is still the live day-to-day environment until we complete validation and cut over. That means:
-- new reusable code should be organized here
+There is still a separate operational workspace used for day-to-day trading operations and notes. The intended split is:
+- reusable code lives here
 - secrets stay local and are not committed
 - generated outputs stay local and are not committed
-- `balas-product-os` keeps the operational notes, reports, and legacy runtime context
+- operational reports and private trading context stay outside the public repo
 
 ## Layout
 
 ```text
-bala-trading-platform/
+.
   apps/
     briefing/
     journaling/
@@ -56,7 +56,7 @@ cp .env.example .env
 2. Initialize the archive database:
 
 ```bash
-cd /Users/rugan/Projects/bala-trading-platform
+cd /path/to/bala-trading-platform
 PYTHONPATH=packages/trading_platform/src python3.11 -m trading_platform.cli init-db
 ```
 
@@ -80,6 +80,7 @@ zsh apps/analyzers-upstox/legacy/run_all.sh
 Start here:
 - `docs/inventory/tooling-inventory.md`
 - `docs/operations/maintenance-map.md`
+- `docs/operations/runbook.md`
 - `docs/architecture/`
 
 ## Secrets and Exclusions
@@ -93,4 +94,3 @@ Do not commit:
 - logs
 
 These are already covered by `.gitignore`, but the operating assumption should still be that credentials and outputs remain local-only.
-

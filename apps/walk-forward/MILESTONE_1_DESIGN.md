@@ -1,3 +1,8 @@
+# Historical Milestone 1 Design Note
+
+This file is preserved for design history from the earlier local workspace.
+Use the current README and runbook for practical commands.
+
 # Milestone 1 Design Note
 
 This note defines the **first safe refactor step** toward a strategy-agnostic and provider-agnostic walk-forward engine.

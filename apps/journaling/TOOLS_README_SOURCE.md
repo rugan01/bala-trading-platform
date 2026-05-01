@@ -1,3 +1,9 @@
+# Historical Source Snapshot
+
+This file is an archived source snapshot from the earlier private local workspace.
+
+Some commands and paths below still reference the old setup. Use `apps/journaling/README.md` and `docs/operations/runbook.md` for the current public-facing instructions.
+
 # Tools
 
 Scripts, utilities, and automations for the Product OS.

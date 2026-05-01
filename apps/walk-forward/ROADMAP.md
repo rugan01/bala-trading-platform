@@ -1,3 +1,8 @@
+# Historical Walk-Forward Roadmap
+
+This roadmap preserves the earlier transition plan and implementation history.
+Some references still point to the pre-monorepo local workspace.
+
 # Walk-Forward Roadmap
 
 This document describes:

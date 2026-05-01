@@ -1,3 +1,8 @@
+HISTORICAL SNAPSHOT
+This file is preserved as deep-reference handoff material from the earlier local workspace.
+Some paths and commands below still refer to that older setup.
+Use the current README files and `docs/operations/runbook.md` for practical repo commands.
+
 This project lives at /Users/rugan/Projects/upstox-analyzer.
 
 Before doing anything else, read these files in order:

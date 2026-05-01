@@ -1,3 +1,8 @@
+# Historical Session Notes
+
+These notes are preserved for implementation history.
+They may still reference older local paths and private workspace conventions.
+
 # Session Notes
 
 This file is the lightweight running journal for new observations, live-market learnings, data quirks, and practical trade-management notes.
