@@ -23,16 +23,17 @@ From the repo root:
 
 ```bash
 cd /path/to/bala-trading-platform
+./.venv/bin/python -m pip install -r apps/walk-forward/requirements.txt
 
-python3.11 apps/walk-forward/main.py --list-profiles
-python3.11 apps/walk-forward/main.py --profile-id silvermic_v3_default --dry-run
-python3.11 apps/walk-forward/main.py --profile-id silvermic_v3_default
+./.venv/bin/python apps/walk-forward/main.py --list-profiles
+./.venv/bin/python apps/walk-forward/main.py --profile-id silvermic_v3_default --dry-run
+./.venv/bin/python apps/walk-forward/main.py --profile-id silvermic_v3_default
 ```
 
 Run multiple profiles:
 
 ```bash
-python3.11 apps/walk-forward/main.py \
+./.venv/bin/python apps/walk-forward/main.py \
   --profile-id silvermic_v3_default \
   --profile-id silvermic_breakout_research \
   --dry-run
@@ -41,9 +42,9 @@ python3.11 apps/walk-forward/main.py \
 ## Replay
 
 ```bash
-python3.11 apps/walk-forward/replay.py --self-test
+./.venv/bin/python apps/walk-forward/replay.py --self-test
 
-python3.11 apps/walk-forward/replay.py \
+./.venv/bin/python apps/walk-forward/replay.py \
   --csv /path/to/candles.csv \
   --session-date YYYY-MM-DD \
   --run-id test_run
@@ -52,8 +53,8 @@ python3.11 apps/walk-forward/replay.py \
 Batch replay:
 
 ```bash
-python3.11 apps/walk-forward/replay_batch.py --list-strategies
-python3.11 apps/walk-forward/replay_batch.py --list-position-plans
+./.venv/bin/python apps/walk-forward/replay_batch.py --list-strategies
+./.venv/bin/python apps/walk-forward/replay_batch.py --list-position-plans
 ```
 
 ## Configuration
@@ -85,4 +86,3 @@ Replay artifacts:
 - `MILESTONE_1_DESIGN.md`
 
 These files contain the deeper research and migration context. Some sections still reflect the earlier local workspace history, so use this README and the repo runbook for the current commands.
-

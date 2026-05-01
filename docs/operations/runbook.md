@@ -75,18 +75,20 @@ Token refresh:
 ```bash
 cd /path/to/bala-trading-platform
 
-python3.11 apps/walk-forward/main.py --list-profiles
-python3.11 apps/walk-forward/main.py --profile-id silvermic_v3_default --dry-run
-python3.11 apps/walk-forward/main.py --profile-id silvermic_v3_default
+./.venv/bin/python -m pip install -r apps/walk-forward/requirements.txt
+
+./.venv/bin/python apps/walk-forward/main.py --list-profiles
+./.venv/bin/python apps/walk-forward/main.py --profile-id silvermic_v3_default --dry-run
+./.venv/bin/python apps/walk-forward/main.py --profile-id silvermic_v3_default
 ```
 
 Replay:
 
 ```bash
-python3.11 apps/walk-forward/replay.py --self-test
+./.venv/bin/python apps/walk-forward/replay.py --self-test
 
-python3.11 apps/walk-forward/replay_batch.py --list-strategies
-python3.11 apps/walk-forward/replay_batch.py --list-position-plans
+./.venv/bin/python apps/walk-forward/replay_batch.py --list-strategies
+./.venv/bin/python apps/walk-forward/replay_batch.py --list-position-plans
 ```
 
 ## Legacy Upstox analyzers
