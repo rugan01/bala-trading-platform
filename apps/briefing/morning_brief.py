@@ -742,7 +742,11 @@ def build_brief_predictions(
                 confidence_score=0.6,
                 regime_label=global_result.data.get('risk_sentiment'),
                 recommendation_text=f"Overnight markets bias for Nifty: {global_result.data.get('overall_bias', 'NEUTRAL')}",
-                features=global_result.data,
+                features={
+                    **global_result.data,
+                    'instrument_key': INDEX_BRIEF_CONFIG['NIFTY']['instrument_key'],
+                    'reference_symbol': 'NIFTY',
+                },
                 metadata={'section': 'global'},
             )
         )

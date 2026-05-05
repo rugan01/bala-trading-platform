@@ -40,6 +40,15 @@ Outputs:
 - `data/reports/premarket/`
 - `data/archive/platform.sqlite3`
 
+Notes:
+- `morning_brief.py` archives `NIFTY_CONTEXT`, index bias calls, F&O directional calls, and MCX calls into the platform DB
+- `brief_eod_review.py` now scores `NIFTY_CONTEXT` as well and marks each directional call as `trended`, `sideways`, `moved_opposite`, or `two_sided_volatile`
+- the default intraday trend threshold is `1%` from the day open in the predicted direction; override with:
+
+```bash
+python3.11 apps/briefing/brief_eod_review.py --source-date YYYY-MM-DD --trend-threshold-pct 1.0
+```
+
 ## Trade journaling
 
 Same-day journaling:
