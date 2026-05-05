@@ -21,6 +21,7 @@ import argparse
 import logging
 import gzip
 import io
+import subprocess
 from datetime import datetime, date, time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -208,13 +209,83 @@ class UpstoxClient:
     BASE_URL = "https://api.upstox.com/v2"
     INSTRUMENTS_URL = "https://assets.upstox.com/market-quote/instruments/exchange"
 
-    def __init__(self, access_token: str):
-        self.access_token = access_token
+    def __init__(
+        self,
+        access_token: str,
+        account: str = 'BALA',
+        env_file: str | Path = DEFAULT_ENV_FILE,
+        auto_refresh_on_unauthorized: bool = True,
+    ):
+        self.account = account.upper()
+        self.env_file = Path(env_file)
+        self.auto_refresh_on_unauthorized = auto_refresh_on_unauthorized
+        self._refresh_attempted = False
+        self._set_access_token(access_token)
+        self._instruments_cache = {}
+
+    def _set_access_token(self, access_token: str):
+        self.access_token = access_token.strip("'\"")
         self.headers = {
-            "Authorization": f"Bearer {access_token}",
+            "Authorization": f"Bearer {self.access_token}",
             "Accept": "application/json"
         }
-        self._instruments_cache = {}
+
+    def _load_access_token_from_env(self) -> Optional[str]:
+        load_dotenv(self.env_file, override=True)
+        token = os.getenv(f'UPSTOX_{self.account}_ACCESS_TOKEN')
+        if not token and self.account == 'BALA':
+            token = os.getenv('UPSTOX_ACCESS_TOKEN')
+        return token.strip("'\"") if token else None
+
+    def _refresh_access_token(self):
+        python_bin = REPO_ROOT / '.venv' / 'bin' / 'python'
+        refresh_script = REPO_ROOT / 'apps' / 'journaling' / 'upstox_token_refresh.py'
+        if not python_bin.exists():
+            raise RuntimeError(
+                f"Automatic Upstox token refresh requires {python_bin} to exist. "
+                "Create the repo .venv first and install journaling dependencies."
+            )
+        if not refresh_script.exists():
+            raise RuntimeError(f"Automatic token refresh script not found: {refresh_script}")
+
+        logger.info("[%s] Upstox token appears stale. Attempting automatic refresh...", self.account)
+        result = subprocess.run(
+            [
+                str(python_bin),
+                str(refresh_script),
+                '--account', self.account,
+                '--env-file', str(self.env_file),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or '').strip()
+            raise RuntimeError(
+                f"Automatic Upstox token refresh failed for {self.account}. {detail}"
+            )
+
+        new_token = self._load_access_token_from_env()
+        if not new_token:
+            raise RuntimeError(
+                f"Automatic Upstox token refresh succeeded but no token was found in {self.env_file}"
+            )
+        self._set_access_token(new_token)
+        logger.info("[%s] Automatic Upstox token refresh succeeded; retrying API call", self.account)
+
+    def _request_get(self, url: str, *, params: Optional[dict] = None, timeout: int = 20) -> requests.Response:
+        response = requests.get(url, headers=self.headers, params=params, timeout=timeout)
+        if (
+            response.status_code == 401
+            and self.auto_refresh_on_unauthorized
+            and not self._refresh_attempted
+        ):
+            self._refresh_attempted = True
+            self._refresh_access_token()
+            response = requests.get(url, headers=self.headers, params=params, timeout=timeout)
+        response.raise_for_status()
+        return response
 
     def get_completed_orders(self, target_date: Optional[date] = None) -> list[Order]:
         """Fetch completed trades for the requested date.
@@ -254,8 +325,7 @@ class UpstoxClient:
     def _get_trades_for_day(self, target_date: Optional[date] = None) -> list[Order]:
         """Fetch executed trades for the current day from Upstox trade-history API."""
         url = f"{self.BASE_URL}/order/trades/get-trades-for-day"
-        response = requests.get(url, headers=self.headers, timeout=20)
-        response.raise_for_status()
+        response = self._request_get(url, timeout=20)
 
         data = response.json()
         if data.get('status') != 'success':
@@ -314,8 +384,7 @@ class UpstoxClient:
                     'page_number': page_number,
                     'page_size': 5000,
                 }
-                response = requests.get(url, headers=self.headers, params=params, timeout=20)
-                response.raise_for_status()
+                response = self._request_get(url, params=params, timeout=20)
 
                 data = response.json()
                 if data.get('status') != 'success':
@@ -805,8 +874,7 @@ class UpstoxClient:
             'price': price
         }
 
-        response = requests.get(url, headers=self.headers, params=params)
-        response.raise_for_status()
+        response = self._request_get(url, params=params, timeout=20)
 
         data = response.json()
         if data.get('status') != 'success':
@@ -2605,7 +2673,7 @@ def main():
 
     try:
         # Initialize clients
-        upstox = UpstoxClient(upstox_token)
+        upstox = UpstoxClient(upstox_token, account=args.account, env_file=args.env_file)
         notion = NotionClient(notion_key, notion_db)
         processor = TradeProcessor(upstox, notion, account=account, dry_run=args.dry_run)
 

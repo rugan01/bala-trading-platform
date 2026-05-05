@@ -64,6 +64,11 @@ python3.11 apps/journaling/broker_trade_backfill.py \
   --date YYYY-MM-DD
 ```
 
+Tips:
+- set `BROKER_UCC_BALA` / `BROKER_UCC_NIMMY` in `.env` if you want broker files to auto-detect the account without `--account`
+- the broker backfill path keeps the broker-file trade times and uses Upstox fee lookup
+- if the Upstox token is stale, the shared client will auto-refresh it once through `./.venv/bin/python apps/journaling/upstox_token_refresh.py` and retry
+
 Token refresh:
 
 ```bash

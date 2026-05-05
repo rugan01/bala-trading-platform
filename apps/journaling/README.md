@@ -57,8 +57,18 @@ Important values:
 - optional `BROKER_UCC_BALA`
 - optional `BROKER_UCC_NIMMY`
 
+For broker XLSX recovery, set the UCC mapping in `.env` if you want account
+auto-detection without passing `--account`:
+
+```bash
+BROKER_UCC_BALA=...
+BROKER_UCC_NIMMY=...
+```
+
 ## Notes
 
 - same-day processing is preferred because Upstox same-day trades include better timestamp context
 - broker XLSX backfill is the fallback path when the same-day run was missed
+- broker XLSX backfill preserves the broker-file trade times and uses Upstox for fee lookup
+- if the Upstox token is stale during historical recovery or fee lookup, the shared client will attempt one automatic refresh via the repo `.venv` token-refresh script and retry
 - older deep-reference notes were preserved in `TOOLS_README_SOURCE.md`

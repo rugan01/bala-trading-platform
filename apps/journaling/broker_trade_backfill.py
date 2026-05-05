@@ -924,6 +924,7 @@ def replay_fills_through_trade_journal(
     account: str,
     fills: list[BrokerTradeFill],
     dry_run: bool,
+    env_file: str,
 ) -> tuple[int, int]:
     upstox_token = os.getenv(f'UPSTOX_{account}_ACCESS_TOKEN')
     if not upstox_token and account == 'BALA':
@@ -933,7 +934,11 @@ def replay_fills_through_trade_journal(
         return 0, 0
 
     journal_notion = JournalNotionClient(notion_key.strip("'\""), notion_db.strip("'\""))
-    upstox = JournalUpstoxClient(upstox_token.strip("'\""))
+    upstox = JournalUpstoxClient(
+        upstox_token.strip("'\""),
+        account=account,
+        env_file=env_file,
+    )
     processor = JournalTradeProcessor(upstox, journal_notion, account=account, dry_run=dry_run)
     orders = fills_to_journal_orders(fills)
     trade_entries = processor.process_orders(orders)
@@ -962,6 +967,7 @@ def run_backfill(
     dry_run: bool,
     notion_key: str,
     notion_db: str,
+    env_file: str,
 ) -> tuple[str, int, int]:
     fills = parse_broker_trade_file(broker_file, account_override=account_override, target_date=target_date)
     if not fills:
@@ -1017,6 +1023,7 @@ def run_backfill(
             account=account,
             fills=day_fills,
             dry_run=dry_run,
+            env_file=env_file,
         )
         total_changed += updated_count + journal_changed
         total_created += journal_created
@@ -1058,6 +1065,7 @@ def main() -> int:
             dry_run=args.dry_run,
             notion_key=notion_key,
             notion_db=notion_db,
+            env_file=args.env_file,
         )
         total_updates += count
         total_created += created
