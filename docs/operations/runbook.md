@@ -68,6 +68,8 @@ Tips:
 - set `BROKER_UCC_BALA` / `BROKER_UCC_NIMMY` in `.env` if you want broker files to auto-detect the account without `--account`
 - the broker backfill path keeps the broker-file trade times and uses Upstox fee lookup
 - if the Upstox token is stale, the shared client will auto-refresh it once through `./.venv/bin/python apps/journaling/upstox_token_refresh.py` and retry
+- if auto-detection is not configured yet, pass `--account BALA` or `--account NIMMY`
+- this is the preferred path for missed-day recovery because plain historical Upstox journaling does not preserve exact intraday broker times
 
 Token refresh:
 

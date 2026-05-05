@@ -65,6 +65,32 @@ BROKER_UCC_BALA=...
 BROKER_UCC_NIMMY=...
 ```
 
+## Broker recovery behavior
+
+When the same-day journal run was missed, the preferred recovery path is:
+
+```bash
+python3.11 apps/journaling/broker_trade_backfill.py \
+  --broker-file /path/to/export.xlsx \
+  --date YYYY-MM-DD
+```
+
+What this path does:
+- auto-detects the account from `BROKER_UCC_*` in `.env` when available
+- keeps the exact broker-file trade times instead of writing `00:00`
+- replays the fills through the shared journal processor so direction, FIFO matching, and spread handling stay consistent
+- uses Upstox fee lookup for brokerage / charges
+- if Upstox returns `401` during historical fetch or fee lookup, attempts one automatic token refresh through the repo `.venv` token-refresh script and retries
+
+If account auto-detection is not configured yet, pass the account explicitly:
+
+```bash
+python3.11 apps/journaling/broker_trade_backfill.py \
+  --broker-file /path/to/export.xlsx \
+  --date YYYY-MM-DD \
+  --account BALA
+```
+
 ## Notes
 
 - same-day processing is preferred because Upstox same-day trades include better timestamp context
