@@ -59,6 +59,7 @@ class BriefOutcomeRecord:
     bearish_correct: bool | None = None
     score: float | None = None
     notes: str | None = None
+    details: dict[str, Any] = field(default_factory=dict)
     outcome_id: str | None = None
 
 

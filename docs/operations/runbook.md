@@ -43,6 +43,11 @@ Outputs:
 Notes:
 - `morning_brief.py` archives `NIFTY_CONTEXT`, index bias calls, F&O directional calls, and MCX calls into the platform DB
 - `brief_eod_review.py` now scores `NIFTY_CONTEXT` as well and marks each directional call as `trended`, `sideways`, `moved_opposite`, or `two_sided_volatile`
+- the EOD reviewer also archives day-structure parameters for each call:
+  - CPR width and bucket
+  - open relation to CPR / pivot / R1 / S1
+  - gap size and `>1%` flag
+  - Camarilla R3 / R4 / S3 / S4 rejection behavior
 - the default intraday trend threshold is `1%` from the day open in the predicted direction; override with:
 
 ```bash

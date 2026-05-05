@@ -19,6 +19,16 @@ def initialize_database(db_path: Path = DEFAULT_DB_PATH) -> Path:
             conn.execute(pragma)
         for statement in SCHEMA_STATEMENTS:
             conn.execute(statement)
+        _apply_migrations(conn)
         conn.commit()
 
     return db_path
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    existing_columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info('brief_outcomes')").fetchall()
+    }
+    if 'details_json' not in existing_columns:
+        conn.execute("ALTER TABLE brief_outcomes ADD COLUMN details_json TEXT")

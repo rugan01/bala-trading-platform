@@ -210,6 +210,7 @@ SCHEMA_STATEMENTS = [
         bearish_correct INTEGER,
         score REAL,
         notes TEXT,
+        details_json TEXT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (prediction_id) REFERENCES brief_predictions (prediction_id)
     )

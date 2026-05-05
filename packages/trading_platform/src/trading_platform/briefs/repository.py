@@ -135,8 +135,8 @@ def archive_brief_outcomes(
                     outcome_id, prediction_id, evaluation_timestamp, evaluation_date,
                     horizon_label, realized_direction, realized_return_pct,
                     max_favorable_excursion_pct, max_adverse_excursion_pct,
-                    hit_target, hit_stop, bullish_correct, bearish_correct, score, notes
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    hit_target, hit_stop, bullish_correct, bearish_correct, score, notes, details_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     outcome_id,
@@ -154,6 +154,7 @@ def archive_brief_outcomes(
                     None if outcome.bearish_correct is None else int(outcome.bearish_correct),
                     outcome.score,
                     outcome.notes,
+                    _json(outcome.details),
                 ),
             )
 
@@ -268,11 +269,17 @@ def summarize_recent_learning(
                 p.predicted_direction,
                 o.bullish_correct,
                 o.bearish_correct,
-                o.score
+                o.score,
+                o.evaluation_date,
+                o.details_json
             FROM brief_outcomes o
             JOIN brief_predictions p ON p.prediction_id = o.prediction_id
             WHERE o.evaluation_date >= ?
-              AND p.predicted_direction IN ('bullish', 'bearish')
+              AND (
+                    p.predicted_direction IN ('bullish', 'bearish')
+                    OR p.predicted_direction LIKE '%bullish%'
+                    OR p.predicted_direction LIKE '%bearish%'
+                  )
             """,
             (cutoff,),
         ).fetchall()
@@ -284,9 +291,10 @@ def summarize_recent_learning(
         )
 
     def is_correct(row: sqlite3.Row) -> bool:
-        if row['predicted_direction'] == 'bullish':
+        direction = str(row['predicted_direction'] or '').lower()
+        if 'bullish' in direction:
             return bool(row['bullish_correct'])
-        if row['predicted_direction'] == 'bearish':
+        if 'bearish' in direction:
             return bool(row['bearish_correct'])
         return False
 
@@ -335,5 +343,75 @@ def summarize_recent_learning(
         family, stats = weakest[0]
         hit_rate = (stats['correct'] / stats['total']) * 100 if stats['total'] else 0
         lines.append(f"Weakest recent family: {family} at {hit_rate:.1f}% ({int(stats['correct'])}/{int(stats['total'])}).")
+
+    latest_date = max((row['evaluation_date'] for row in rows if row['evaluation_date']), default=None)
+    latest_rows = [row for row in rows if row['evaluation_date'] == latest_date] if latest_date else []
+    parsed_details = []
+    for row in latest_rows:
+        details = _loads_json(row['details_json']) if 'details_json' in row.keys() else None
+        if details:
+            parsed_details.append(details)
+
+    if parsed_details:
+        intraday_counts: dict[str, int] = {}
+        open_relation_counts: dict[str, int] = {}
+        cpr_bucket_counts: dict[str, int] = {}
+        gap_gt_1 = 0
+        rejection_count = 0
+        trended_open_relations: dict[str, int] = {}
+        sideways_open_relations: dict[str, int] = {}
+        trended_gap_gt_1 = 0
+        sideways_gap_gt_1 = 0
+        for details in parsed_details:
+            intraday = ((details.get('intraday') or {}).get('intraday_character')) or 'unknown'
+            intraday_counts[intraday] = intraday_counts.get(intraday, 0) + 1
+
+            structure = details.get('day_structure') or {}
+            open_relation = structure.get('open_relation') or 'unknown'
+            open_relation_counts[open_relation] = open_relation_counts.get(open_relation, 0) + 1
+
+            cpr_bucket = structure.get('cpr_width_bucket') or 'unknown'
+            cpr_bucket_counts[cpr_bucket] = cpr_bucket_counts.get(cpr_bucket, 0) + 1
+
+            if structure.get('gap_gt_1pct'):
+                gap_gt_1 += 1
+                if intraday == 'trended':
+                    trended_gap_gt_1 += 1
+                if intraday == 'sideways':
+                    sideways_gap_gt_1 += 1
+
+            if intraday == 'trended':
+                trended_open_relations[open_relation] = trended_open_relations.get(open_relation, 0) + 1
+            elif intraday == 'sideways':
+                sideways_open_relations[open_relation] = sideways_open_relations.get(open_relation, 0) + 1
+
+            rejections = structure.get('camarilla_rejections') or {}
+            if any(bool(value) for value in rejections.values()):
+                rejection_count += 1
+
+        top_open_relation = max(open_relation_counts.items(), key=lambda item: item[1])[0] if open_relation_counts else 'unknown'
+        top_cpr_bucket = max(cpr_bucket_counts.items(), key=lambda item: item[1])[0] if cpr_bucket_counts else 'unknown'
+        lines.append(
+            f"Latest reviewed day ({latest_date}) structure mix: "
+            f"trended={intraday_counts.get('trended', 0)}, sideways={intraday_counts.get('sideways', 0)}, "
+            f"moved_opposite={intraday_counts.get('moved_opposite', 0)}, two_sided_volatile={intraday_counts.get('two_sided_volatile', 0)}."
+        )
+        lines.append(
+            f"Common day traits on {latest_date}: most names opened {top_open_relation}, "
+            f"most had {top_cpr_bucket} CPR width, {gap_gt_1}/{len(parsed_details)} had >1% gap, "
+            f"and {rejection_count}/{len(parsed_details)} showed Camarilla rejection behavior."
+        )
+        if trended_open_relations:
+            top_trended_open = max(trended_open_relations.items(), key=lambda item: item[1])[0]
+            lines.append(
+                f"Trending names on {latest_date} most often opened {top_trended_open}; "
+                f"{trended_gap_gt_1}/{intraday_counts.get('trended', 0)} of them had >1% gaps."
+            )
+        if sideways_open_relations:
+            top_sideways_open = max(sideways_open_relations.items(), key=lambda item: item[1])[0]
+            lines.append(
+                f"Sideways names on {latest_date} most often opened {top_sideways_open}; "
+                f"{sideways_gap_gt_1}/{intraday_counts.get('sideways', 0)} of them had >1% gaps."
+            )
 
     return '\n'.join(lines)

@@ -181,6 +181,9 @@ def _get_day_candle_context(
             'high': float(candle['high']),
             'low': float(candle['low']),
             'close': float(candle['close']),
+            'previous_open': float(previous['open']) if previous else None,
+            'previous_high': float(previous['high']) if previous else None,
+            'previous_low': float(previous['low']) if previous else None,
             'previous_close': float(previous['close']) if previous else None,
         }
     return None
@@ -238,6 +241,98 @@ def _compute_intraday_characteristics(
     }
 
 
+def _calculate_day_structure(day_context: Dict[str, Any]) -> Dict[str, Any]:
+    prev_high = float(day_context.get('previous_high') or 0)
+    prev_low = float(day_context.get('previous_low') or 0)
+    prev_close = float(day_context.get('previous_close') or 0)
+    day_open = float(day_context.get('open') or 0)
+    day_high = float(day_context.get('high') or 0)
+    day_low = float(day_context.get('low') or 0)
+    day_close = float(day_context.get('close') or 0)
+
+    if not all([prev_high, prev_low, prev_close, day_open]):
+        return {}
+
+    pivot = (prev_high + prev_low + prev_close) / 3
+    bc = (prev_high + prev_low) / 2
+    tc = (pivot - bc) + pivot
+    r1 = (2 * pivot) - prev_low
+    s1 = (2 * pivot) - prev_high
+    cpr_width = abs(tc - bc)
+    cpr_width_pct = (cpr_width / prev_close) * 100 if prev_close else 0.0
+
+    camarilla_range = (prev_high - prev_low) * 1.1
+    r3 = prev_close + camarilla_range / 4
+    r4 = prev_close + camarilla_range / 2
+    s3 = prev_close - camarilla_range / 4
+    s4 = prev_close - camarilla_range / 2
+
+    if cpr_width_pct <= 0.25:
+        cpr_width_bucket = 'narrow'
+    elif cpr_width_pct >= 0.6:
+        cpr_width_bucket = 'wide'
+    else:
+        cpr_width_bucket = 'moderate'
+
+    pivot_distance_pct = abs(day_open - pivot) / pivot * 100 if pivot else 0.0
+    opened_near_pivot = pivot_distance_pct <= 0.15
+    gap_pct = ((day_open - prev_close) / prev_close) * 100 if prev_close else 0.0
+    gap_gt_1pct = abs(gap_pct) >= 1.0
+
+    if day_open >= r1:
+        open_relation = 'above_r1'
+    elif day_open > tc:
+        open_relation = 'above_cpr'
+    elif bc <= day_open <= tc:
+        open_relation = 'inside_cpr'
+    elif day_open <= s1:
+        open_relation = 'below_s1'
+    else:
+        open_relation = 'below_cpr'
+
+    if day_close >= r1:
+        close_relation = 'above_r1'
+    elif day_close > tc:
+        close_relation = 'above_cpr'
+    elif bc <= day_close <= tc:
+        close_relation = 'inside_cpr'
+    elif day_close <= s1:
+        close_relation = 'below_s1'
+    else:
+        close_relation = 'below_cpr'
+
+    camarilla_rejections = {
+        'r3_rejection': day_high >= r3 and day_close < r3,
+        'r4_rejection': day_high >= r4 and day_close < r4,
+        's3_rejection': day_low <= s3 and day_close > s3,
+        's4_rejection': day_low <= s4 and day_close > s4,
+    }
+
+    return {
+        'pivot': round(pivot, 4),
+        'bc': round(bc, 4),
+        'tc': round(tc, 4),
+        'r1': round(r1, 4),
+        's1': round(s1, 4),
+        'cpr_width': round(cpr_width, 4),
+        'cpr_width_pct': round(cpr_width_pct, 4),
+        'cpr_width_bucket': cpr_width_bucket,
+        'open_relation': open_relation,
+        'close_relation': close_relation,
+        'opened_near_pivot': opened_near_pivot,
+        'pivot_distance_pct': round(pivot_distance_pct, 4),
+        'gap_pct': round(gap_pct, 4),
+        'gap_gt_1pct': gap_gt_1pct,
+        'camarilla': {
+            'r3': round(r3, 4),
+            'r4': round(r4, 4),
+            's3': round(s3, 4),
+            's4': round(s4, 4),
+        },
+        'camarilla_rejections': camarilla_rejections,
+    }
+
+
 def _build_outcome_notes(
     *,
     source_label: str,
@@ -259,6 +354,20 @@ def _build_outcome_notes(
     )
 
 
+def _build_structure_notes(structure: Optional[Dict[str, Any]]) -> str:
+    if not structure:
+        return ''
+    rejections = structure.get('camarilla_rejections') or {}
+    rejection_labels = [label for label, active in rejections.items() if active]
+    rejection_text = ','.join(rejection_labels) if rejection_labels else 'none'
+    return (
+        f" Structure: open {structure.get('open_relation')} | close {structure.get('close_relation')} | "
+        f"CPR {structure.get('cpr_width_bucket')} ({float(structure.get('cpr_width_pct') or 0):.2f}%) | "
+        f"gap {float(structure.get('gap_pct') or 0):+.2f}% | near pivot={bool(structure.get('opened_near_pivot'))} | "
+        f"camarilla rejection={rejection_text}."
+    )
+
+
 def _purge_existing_outcomes(prediction_ids: List[str], evaluation_date: str) -> None:
     if not prediction_ids:
         return
@@ -266,8 +375,8 @@ def _purge_existing_outcomes(prediction_ids: List[str], evaluation_date: str) ->
     placeholders = ','.join('?' for _ in prediction_ids)
     with sqlite3.connect(DEFAULT_DB_PATH) as conn:
         conn.execute(
-            f"DELETE FROM brief_outcomes WHERE evaluation_date = ? AND prediction_id IN ({placeholders})",
-            [evaluation_date, *prediction_ids],
+            f"DELETE FROM brief_outcomes WHERE prediction_id IN ({placeholders})",
+            [*prediction_ids],
         )
         conn.commit()
 
@@ -347,6 +456,8 @@ def evaluate_equity_prediction(
         else None
     )
 
+    structure = _calculate_day_structure(day_context) if day_context else {}
+
     return (
         BriefOutcomeRecord(
             outcome_id=f"outcome_{prediction_id}_{evaluation_date.isoformat()}",
@@ -367,7 +478,11 @@ def evaluate_equity_prediction(
                 entry_reference=float(entry_reference),
                 evaluated_price=float(current_price),
                 intraday=intraday,
-            ),
+            ) + _build_structure_notes(structure),
+            details={
+                'intraday': intraday or {},
+                'day_structure': structure,
+            },
         ),
         None,
     )
@@ -423,6 +538,8 @@ def evaluate_index_prediction(
         else None
     )
 
+    structure = _calculate_day_structure(day_context) if day_context else {}
+
     return (
         BriefOutcomeRecord(
             outcome_id=f"outcome_{prediction_id}_{evaluation_date.isoformat()}",
@@ -443,7 +560,11 @@ def evaluate_index_prediction(
                 entry_reference=float(entry_reference),
                 evaluated_price=float(current_price),
                 intraday=intraday,
-            ),
+            ) + _build_structure_notes(structure),
+            details={
+                'intraday': intraday or {},
+                'day_structure': structure,
+            },
         ),
         None,
     )
@@ -499,6 +620,8 @@ def evaluate_commodity_prediction(
         else None
     )
 
+    structure = _calculate_day_structure(day_context) if day_context else {}
+
     return (
         BriefOutcomeRecord(
             outcome_id=f"outcome_{prediction_id}_{evaluation_date.isoformat()}",
@@ -519,7 +642,11 @@ def evaluate_commodity_prediction(
                 entry_reference=float(entry_reference),
                 evaluated_price=float(current_price),
                 intraday=intraday,
-            ),
+            ) + _build_structure_notes(structure),
+            details={
+                'intraday': intraday or {},
+                'day_structure': structure,
+            },
         ),
         None,
     )
@@ -563,6 +690,8 @@ def evaluate_macro_prediction(
         trend_threshold_pct=trend_threshold_pct,
     )
 
+    structure = _calculate_day_structure(day_context)
+
     return (
         BriefOutcomeRecord(
             outcome_id=f"outcome_{prediction_id}_{evaluation_date.isoformat()}",
@@ -583,7 +712,11 @@ def evaluate_macro_prediction(
                 entry_reference=entry_reference,
                 evaluated_price=current_price,
                 intraday=intraday,
-            ),
+            ) + _build_structure_notes(structure),
+            details={
+                'intraday': intraday or {},
+                'day_structure': structure,
+            },
         ),
         None,
     )
@@ -641,6 +774,7 @@ def build_report(
                 'score': outcome.score,
                 'max_favorable_excursion_pct': outcome.max_favorable_excursion_pct,
                 'max_adverse_excursion_pct': outcome.max_adverse_excursion_pct,
+                'details': outcome.details,
                 'is_correct': _is_directionally_correct(
                     str((prediction_map.get(outcome.prediction_id, {}) or {}).get('predicted_direction')),
                     outcome,
@@ -768,17 +902,16 @@ def main() -> int:
     ]
 
     for item in summary['outcomes']:
-        character = 'unknown'
-        notes = item.get('notes') or ''
-        for label in ('trended', 'sideways', 'moved_opposite', 'two_sided_volatile'):
-            if f'Intraday character {label}' in notes:
-                character = label
-                break
+        details = item.get('details') or {}
+        structure = details.get('day_structure') or {}
+        character = ((details.get('intraday') or {}).get('intraday_character')) or 'unknown'
         lines.append(
             f"{item['prediction_id']}: {item['symbol']} | predicted {item['predicted_direction']} -> realized {item['realized_direction']} | "
             f"{'CORRECT' if item['is_correct'] else 'WRONG'} | return {item['realized_return_pct']:+.2f}% | "
             f"intraday {character} | mfe {float(item.get('max_favorable_excursion_pct') or 0):+.2f}% | "
-            f"mae {float(item.get('max_adverse_excursion_pct') or 0):+.2f}% | score {item['score']:+.2f}"
+            f"mae {float(item.get('max_adverse_excursion_pct') or 0):+.2f}% | "
+            f"open {structure.get('open_relation', 'unknown')} | CPR {structure.get('cpr_width_bucket', 'unknown')} | "
+            f"gap {float(structure.get('gap_pct') or 0):+.2f}% | score {item['score']:+.2f}"
         )
 
     if skipped:
