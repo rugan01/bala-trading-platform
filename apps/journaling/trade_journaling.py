@@ -642,7 +642,7 @@ class UpstoxClient:
             # Day-first derivative format: DDMMMYY{STRIKE}CE/PE
             # Used by historical reconstruction and some instruments with an
             # explicit day component.
-            ddmmmyy_match = re.match(r'^(\d{1,2})([A-Z]{3})(\d{2})(\d+)(CE|PE)$', remainder)
+            ddmmmyy_match = re.match(r'^(\d{1,2})([A-Z]{3})(\d{2})(\d+(?:\.\d+)?)(CE|PE)$', remainder)
             ddmmmyy_candidate = None
             if ddmmmyy_match:
                 ddmmmyy_candidate = {
@@ -661,7 +661,7 @@ class UpstoxClient:
                 # e.g. SILVERM26MAY200000PE, while historical reconstruction uses
                 # DDMMMYYSTRIKECE/PE. Try the monthly compact form first and only
                 # fall back to the day-first form when it is more plausible.
-                mcx_monthly_match = re.match(r'^(\d{2})([A-Z]{3})(\d+)(CE|PE)$', remainder)
+                mcx_monthly_match = re.match(r'^(\d{2})([A-Z]{3})(\d+(?:\.\d+)?)(CE|PE)$', remainder)
                 if mcx_monthly_match:
                     monthly_year = int(mcx_monthly_match.group(1))
                     monthly_month = mcx_monthly_match.group(2)
@@ -750,7 +750,7 @@ class UpstoxClient:
                         else:
                             # Monthly expiry - all of rest is strike unless the
                             # explicit day-first form is clearly more plausible.
-                            if ddmmmyy_candidate and re.fullmatch(r'\d+', rest) and self._prefer_day_first_option_format(
+                            if ddmmmyy_candidate and self._prefer_day_first_option_format(
                                 day_first_year_short=ddmmmyy_candidate['year_short'],
                                 day_first_strike_text=ddmmmyy_candidate['strike_text'],
                                 monthly_year_short=int(year),
