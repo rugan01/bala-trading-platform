@@ -283,6 +283,24 @@ def summarize_recent_learning(
             """,
             (cutoff,),
         ).fetchall()
+        regime_rows = conn.execute(
+            """
+            SELECT
+                p.signal_family,
+                p.predicted_direction,
+                o.evaluation_date,
+                o.details_json
+            FROM brief_outcomes o
+            JOIN brief_predictions p ON p.prediction_id = o.prediction_id
+            WHERE o.evaluation_date >= ?
+              AND p.asset_class = 'index'
+              AND p.signal_family = 'market_regime'
+              AND (
+                    p.predicted_direction IN ('trending', 'range_bound', 'range-bound')
+                  )
+            """,
+            (cutoff,),
+        ).fetchall()
 
     if not rows:
         return (
@@ -331,6 +349,37 @@ def summarize_recent_learning(
             f"Bearish precision: {bearish_correct}/{len(bearish_rows)} ({(bearish_correct / len(bearish_rows)) * 100:.1f}%)."
         )
 
+    if regime_rows:
+        regime_total = len(regime_rows)
+        regime_correct = 0
+        regime_breakdown: dict[str, dict[str, int]] = {}
+        for row in regime_rows:
+            direction = str(row['predicted_direction'] or '').lower().replace('-', '_')
+            details = _loads_json(row['details_json']) if 'details_json' in row.keys() else None
+            regime_eval = ((details or {}).get('regime_eval')) or (((details or {}).get('intraday') or {}).get('regime_eval')) or {}
+            correct = bool(regime_eval.get('is_correct'))
+            if correct:
+                regime_correct += 1
+            stats = regime_breakdown.setdefault(direction, {'total': 0, 'correct': 0})
+            stats['total'] += 1
+            if correct:
+                stats['correct'] += 1
+
+        lines.append(
+            f"Index regime accuracy: {regime_correct}/{regime_total} ({(regime_correct / regime_total) * 100:.1f}%)."
+        )
+        breakdown_parts = []
+        for label in ('range_bound', 'trending'):
+            if label not in regime_breakdown:
+                continue
+            stats = regime_breakdown[label]
+            hit_rate = (stats['correct'] / stats['total']) * 100 if stats['total'] else 0
+            breakdown_parts.append(
+                f"{label.replace('_', '-')} {stats['correct']}/{stats['total']} ({hit_rate:.1f}%)"
+            )
+        if breakdown_parts:
+            lines.append('Index regime breakdown: ' + '; '.join(breakdown_parts) + '.')
+
     if ranked_families:
         highlights = []
         for family, stats in ranked_families[:max_families]:
@@ -362,6 +411,10 @@ def summarize_recent_learning(
         sideways_open_relations: dict[str, int] = {}
         trended_gap_gt_1 = 0
         sideways_gap_gt_1 = 0
+        prior_trend_counts: dict[str, int] = {}
+        prior_volatility_counts: dict[str, int] = {}
+        trended_prior_context: dict[str, int] = {}
+        sideways_prior_context: dict[str, int] = {}
         for details in parsed_details:
             intraday = ((details.get('intraday') or {}).get('intraday_character')) or 'unknown'
             intraday_counts[intraday] = intraday_counts.get(intraday, 0) + 1
@@ -373,6 +426,12 @@ def summarize_recent_learning(
             cpr_bucket = structure.get('cpr_width_bucket') or 'unknown'
             cpr_bucket_counts[cpr_bucket] = cpr_bucket_counts.get(cpr_bucket, 0) + 1
 
+            previous_days_context = structure.get('previous_days_context') or {}
+            prior_trend = previous_days_context.get('prior_trend_label') or 'unknown'
+            prior_volatility = previous_days_context.get('prior_volatility_label') or 'unknown'
+            prior_trend_counts[prior_trend] = prior_trend_counts.get(prior_trend, 0) + 1
+            prior_volatility_counts[prior_volatility] = prior_volatility_counts.get(prior_volatility, 0) + 1
+
             if structure.get('gap_gt_1pct'):
                 gap_gt_1 += 1
                 if intraday == 'trended':
@@ -382,8 +441,12 @@ def summarize_recent_learning(
 
             if intraday == 'trended':
                 trended_open_relations[open_relation] = trended_open_relations.get(open_relation, 0) + 1
+                context_key = f"{prior_trend}/{prior_volatility}"
+                trended_prior_context[context_key] = trended_prior_context.get(context_key, 0) + 1
             elif intraday == 'sideways':
                 sideways_open_relations[open_relation] = sideways_open_relations.get(open_relation, 0) + 1
+                context_key = f"{prior_trend}/{prior_volatility}"
+                sideways_prior_context[context_key] = sideways_prior_context.get(context_key, 0) + 1
 
             rejections = structure.get('camarilla_rejections') or {}
             if any(bool(value) for value in rejections.values()):
@@ -391,6 +454,8 @@ def summarize_recent_learning(
 
         top_open_relation = max(open_relation_counts.items(), key=lambda item: item[1])[0] if open_relation_counts else 'unknown'
         top_cpr_bucket = max(cpr_bucket_counts.items(), key=lambda item: item[1])[0] if cpr_bucket_counts else 'unknown'
+        top_prior_trend = max(prior_trend_counts.items(), key=lambda item: item[1])[0] if prior_trend_counts else 'unknown'
+        top_prior_volatility = max(prior_volatility_counts.items(), key=lambda item: item[1])[0] if prior_volatility_counts else 'unknown'
         lines.append(
             f"Latest reviewed day ({latest_date}) structure mix: "
             f"trended={intraday_counts.get('trended', 0)}, sideways={intraday_counts.get('sideways', 0)}, "
@@ -399,19 +464,24 @@ def summarize_recent_learning(
         lines.append(
             f"Common day traits on {latest_date}: most names opened {top_open_relation}, "
             f"most had {top_cpr_bucket} CPR width, {gap_gt_1}/{len(parsed_details)} had >1% gap, "
-            f"and {rejection_count}/{len(parsed_details)} showed Camarilla rejection behavior."
+            f"{rejection_count}/{len(parsed_details)} showed Camarilla rejection behavior, "
+            f"and the prior 3-day backdrop was most often {top_prior_trend}/{top_prior_volatility}."
         )
         if trended_open_relations:
             top_trended_open = max(trended_open_relations.items(), key=lambda item: item[1])[0]
+            top_trended_context = max(trended_prior_context.items(), key=lambda item: item[1])[0] if trended_prior_context else 'unknown/unknown'
             lines.append(
                 f"Trending names on {latest_date} most often opened {top_trended_open}; "
-                f"{trended_gap_gt_1}/{intraday_counts.get('trended', 0)} of them had >1% gaps."
+                f"{trended_gap_gt_1}/{intraday_counts.get('trended', 0)} of them had >1% gaps; "
+                f"their most common prior-3-day backdrop was {top_trended_context}."
             )
         if sideways_open_relations:
             top_sideways_open = max(sideways_open_relations.items(), key=lambda item: item[1])[0]
+            top_sideways_context = max(sideways_prior_context.items(), key=lambda item: item[1])[0] if sideways_prior_context else 'unknown/unknown'
             lines.append(
                 f"Sideways names on {latest_date} most often opened {top_sideways_open}; "
-                f"{sideways_gap_gt_1}/{intraday_counts.get('sideways', 0)} of them had >1% gaps."
+                f"{sideways_gap_gt_1}/{intraday_counts.get('sideways', 0)} of them had >1% gaps; "
+                f"their most common prior-3-day backdrop was {top_sideways_context}."
             )
 
     return '\n'.join(lines)

@@ -173,6 +173,49 @@ class UpstoxClient:
 
         return None
 
+    def get_quote_mark(self, instrument_key: str) -> Optional[float]:
+        """Fetch the best available last/mark price for an expired option contract."""
+        try:
+            url = f"{self.BASE_URL}/market-quote/quotes"
+            response = requests.get(url, headers=self.headers, params={"instrument_key": instrument_key}, timeout=20)
+            response.raise_for_status()
+
+            payload = response.json()
+            if payload.get('status') != 'success':
+                return None
+
+            data = payload.get('data', {})
+            quote_row = data.get(instrument_key) or data.get(instrument_key.replace('|', ':'))
+            if not quote_row:
+                for _, value in data.items():
+                    if value.get('instrument_token') == instrument_key:
+                        quote_row = value
+                        break
+            if not quote_row:
+                return None
+
+            for key in ('last_price', 'ltp'):
+                if quote_row.get(key) is not None:
+                    return float(quote_row.get(key) or 0.0)
+
+            depth = quote_row.get('depth') or {}
+            buys = depth.get('buy') or []
+            sells = depth.get('sell') or []
+            best_bid = float(buys[0].get('price') or 0.0) if buys else 0.0
+            best_ask = float(sells[0].get('price') or 0.0) if sells else 0.0
+            if best_bid > 0 and best_ask > 0:
+                return round((best_bid + best_ask) / 2, 2)
+            if best_ask > 0:
+                return best_ask
+            if best_bid > 0:
+                return best_bid
+
+            close_value = (quote_row.get('ohlc') or {}).get('close')
+            return float(close_value) if close_value is not None else None
+        except Exception as e:
+            logger.warning(f"Could not fetch quote mark from Upstox: {e}")
+            return None
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -266,16 +309,14 @@ def main():
             logger.info(f"  Quantity: {quantity}")
             logger.info(f"  Strike: {option_strike}")
 
-            # Try to get final price from Upstox P&L
+            # Try to get final price from Upstox quote first
             final_price = None
             if upstox:
                 instrument_key = props.get('instrument_key')  # If stored
                 if instrument_key:
-                    pnl = upstox.get_position_pnl(instrument_key)
-                    if pnl is not None:
-                        # Derive final price from P&L (reverse calculation)
-                        # This is tricky, might need manual entry instead
-                        logger.info(f"  Found P&L: {pnl}")
+                    final_price = upstox.get_quote_mark(instrument_key)
+                    if final_price is not None:
+                        logger.info(f"  Found quote mark from Upstox: {final_price}")
 
             # If no automatic price, prompt for manual entry
             if final_price is None:

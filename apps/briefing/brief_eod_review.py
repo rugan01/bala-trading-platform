@@ -51,7 +51,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_OUTPUT_DIR = PREMARKET_REPORTS_ROOT / 'review'
 SUPPORTED_DIRECTIONAL_ASSET_CLASSES = {'equity', 'index', 'commodity', 'macro'}
 SUPPORTED_DIRECTIONS = {'bullish', 'bearish'}
+SUPPORTED_REGIMES = {'range_bound', 'trending'}
 DEFAULT_TREND_THRESHOLD_PCT = 1.0
+DEFAULT_PRIOR_CONTEXT_LOOKBACK_DAYS = 3
+UPSTOX_INTRADAY_URL = 'https://api.upstox.com/v3/historical-candle/intraday'
 
 
 def _is_directionally_correct(predicted_direction: str, outcome: BriefOutcomeRecord) -> bool:
@@ -64,7 +67,7 @@ def _is_directionally_correct(predicted_direction: str, outcome: BriefOutcomeRec
 
 
 def _normalize_predicted_direction(direction: str | None) -> str:
-    text = str(direction or '').strip().lower().replace(' ', '_')
+    text = str(direction or '').strip().lower().replace(' ', '_').replace('-', '_')
     if not text:
         return ''
     if text in SUPPORTED_DIRECTIONS:
@@ -156,25 +159,121 @@ def _fetch_daily_candles(
     return parsed
 
 
-def _get_day_candle_context(
+def _classify_absolute_intraday_character(
+    *,
+    day_open: float,
+    day_high: float,
+    day_low: float,
+    trend_threshold_pct: float,
+) -> tuple[str, float, float]:
+    if not day_open:
+        return 'unknown', 0.0, 0.0
+
+    up_move_pct = ((day_high - day_open) / day_open) * 100
+    down_move_pct = ((day_open - day_low) / day_open) * 100
+
+    if up_move_pct >= trend_threshold_pct and down_move_pct >= trend_threshold_pct:
+        return 'two_sided_volatile', up_move_pct, down_move_pct
+    if up_move_pct >= trend_threshold_pct or down_move_pct >= trend_threshold_pct:
+        return 'trended', up_move_pct, down_move_pct
+    return 'sideways', up_move_pct, down_move_pct
+
+
+def _fetch_intraday_candles(
+    access_token: str,
+    instrument_key: str,
+    *,
+    interval: str = 'minutes/1',
+) -> List[Dict[str, Any]]:
+    url = f'{UPSTOX_INTRADAY_URL}/{quote(instrument_key, safe="")}/{interval}'
+    response = requests.get(
+        url,
+        headers={
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {access_token}',
+        },
+        timeout=20,
+    )
+    response.raise_for_status()
+    candles = response.json().get('data', {}).get('candles', [])
+    parsed: List[Dict[str, Any]] = []
+    for candle in reversed(candles):
+        parsed.append(
+            {
+                'date': candle[0],
+                'open': float(candle[1]),
+                'high': float(candle[2]),
+                'low': float(candle[3]),
+                'close': float(candle[4]),
+                'volume': int(candle[5] or 0),
+            }
+        )
+    return parsed
+
+
+def _aggregate_intraday_day_context(
+    access_token: str,
+    instrument_key: str,
+    *,
+    target_date: date,
+    previous: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    if target_date != date.today():
+        return None
+
+    try:
+        candles = _fetch_intraday_candles(access_token, instrument_key)
+    except Exception as exc:
+        logger.warning('Could not fetch intraday candles for %s: %s', instrument_key, exc)
+        return None
+
+    same_day = [c for c in candles if _extract_candle_date(c.get('date')) == target_date]
+    if not same_day:
+        return None
+
+    same_day.sort(key=lambda candle: candle['date'])
+    first = same_day[0]
+    last = same_day[-1]
+    previous = previous or {}
+
+    return {
+        'date': target_date.isoformat(),
+        'open': float(first['open']),
+        'high': max(float(c['high']) for c in same_day),
+        'low': min(float(c['low']) for c in same_day),
+        'close': float(last['close']),
+        'previous_open': float(previous['open']) if previous.get('open') is not None else None,
+        'previous_high': float(previous['high']) if previous.get('high') is not None else None,
+        'previous_low': float(previous['low']) if previous.get('low') is not None else None,
+        'previous_close': float(previous['close']) if previous.get('close') is not None else None,
+        'source': 'upstox_intraday_aggregate',
+        'intraday_candle_count': len(same_day),
+    }
+
+
+def _get_day_candle_bundle(
     access_token: Optional[str],
     instrument_key: str,
     target_date: date,
-) -> Optional[Dict[str, Any]]:
+) -> tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
     if not access_token:
-        return None
+        return None, []
 
     try:
         candles = _fetch_daily_candles(access_token, instrument_key, to_date=target_date)
     except Exception as exc:
         logger.warning('Could not fetch historical day candles for %s: %s', instrument_key, exc)
-        return None
+        return None, []
 
+    previous = None
     for idx, candle in enumerate(candles):
         candle_date = _extract_candle_date(candle.get('date'))
+        if candle_date and candle_date < target_date:
+            previous = candle
         if candle_date != target_date:
             continue
-        previous = candles[idx - 1] if idx > 0 else None
+        previous = candles[idx - 1] if idx > 0 else previous
         return {
             'date': candle_date.isoformat(),
             'open': float(candle['open']),
@@ -185,8 +284,33 @@ def _get_day_candle_context(
             'previous_high': float(previous['high']) if previous else None,
             'previous_low': float(previous['low']) if previous else None,
             'previous_close': float(previous['close']) if previous else None,
-        }
-    return None
+            'source': 'upstox_day_candle',
+        }, candles
+
+    intraday_context = _aggregate_intraday_day_context(
+        access_token,
+        instrument_key,
+        target_date=target_date,
+        previous=previous,
+    )
+    if intraday_context:
+        logger.info(
+            'Using intraday aggregate fallback for %s on %s (%s candles)',
+            instrument_key,
+            target_date.isoformat(),
+            intraday_context.get('intraday_candle_count', 0),
+        )
+        return intraday_context, candles
+    return None, candles
+
+
+def _get_day_candle_context(
+    access_token: Optional[str],
+    instrument_key: str,
+    target_date: date,
+) -> Optional[Dict[str, Any]]:
+    context, _ = _get_day_candle_bundle(access_token, instrument_key, target_date)
+    return context
 
 
 def _compute_intraday_characteristics(
@@ -217,7 +341,13 @@ def _compute_intraday_characteristics(
     if previous_close:
         gap_pct = ((day_open - float(previous_close)) / float(previous_close)) * 100
 
-    if favorable_pct >= trend_threshold_pct and adverse_pct >= trend_threshold_pct:
+    absolute_character, up_move_pct, down_move_pct = _classify_absolute_intraday_character(
+        day_open=day_open,
+        day_high=day_high,
+        day_low=day_low,
+        trend_threshold_pct=trend_threshold_pct,
+    )
+    if absolute_character == 'two_sided_volatile':
         intraday_character = 'two_sided_volatile'
     elif favorable_pct >= trend_threshold_pct:
         intraday_character = 'trended'
@@ -237,7 +367,86 @@ def _compute_intraday_characteristics(
         'adverse_move_pct_from_open': round(adverse_pct, 4),
         'close_from_open_pct': round(close_from_open_pct, 4),
         'intraday_character': intraday_character,
+        'absolute_intraday_character': absolute_character,
+        'up_move_pct_from_open': round(up_move_pct, 4),
+        'down_move_pct_from_open': round(down_move_pct, 4),
         'trend_threshold_pct': trend_threshold_pct,
+    }
+
+
+def _build_previous_days_context(
+    candles: List[Dict[str, Any]],
+    *,
+    target_date: date,
+    lookback_days: int = DEFAULT_PRIOR_CONTEXT_LOOKBACK_DAYS,
+) -> Dict[str, Any]:
+    prior = [candle for candle in candles if (_extract_candle_date(candle.get('date')) or target_date) < target_date]
+    if not prior:
+        return {}
+
+    recent = prior[-lookback_days:]
+    if not recent:
+        return {}
+
+    sessions: List[Dict[str, Any]] = []
+    up_days = 0
+    down_days = 0
+    range_pcts: List[float] = []
+    for idx, candle in enumerate(recent):
+        day_open = float(candle.get('open') or 0)
+        day_high = float(candle.get('high') or 0)
+        day_low = float(candle.get('low') or 0)
+        day_close = float(candle.get('close') or 0)
+        return_pct = ((day_close - day_open) / day_open) * 100 if day_open else 0.0
+        range_pct = ((day_high - day_low) / day_open) * 100 if day_open else 0.0
+        prior_close = None
+        if idx > 0:
+            prior_close = float(recent[idx - 1].get('close') or 0)
+        elif len(prior) > len(recent):
+            prior_close = float(prior[-lookback_days - 1].get('close') or 0)
+        close_vs_prev_close_pct = ((day_close - prior_close) / prior_close) * 100 if prior_close else None
+        if return_pct > 0:
+            up_days += 1
+        elif return_pct < 0:
+            down_days += 1
+        range_pcts.append(range_pct)
+        sessions.append(
+            {
+                'date': str(candle.get('date')),
+                'return_pct': round(return_pct, 4),
+                'range_pct': round(range_pct, 4),
+                'close_vs_prev_close_pct': round(close_vs_prev_close_pct, 4) if close_vs_prev_close_pct is not None else None,
+            }
+        )
+
+    first_open = float(recent[0].get('open') or 0)
+    last_close = float(recent[-1].get('close') or 0)
+    net_return_pct = ((last_close - first_open) / first_open) * 100 if first_open else 0.0
+    avg_range_pct = (sum(range_pcts) / len(range_pcts)) if range_pcts else 0.0
+
+    if up_days >= 2 and net_return_pct > 0.5:
+        prior_trend_label = 'uptrend'
+    elif down_days >= 2 and net_return_pct < -0.5:
+        prior_trend_label = 'downtrend'
+    else:
+        prior_trend_label = 'mixed'
+
+    if avg_range_pct < 1.0:
+        prior_volatility_label = 'compressed'
+    elif avg_range_pct > 2.0:
+        prior_volatility_label = 'expanded'
+    else:
+        prior_volatility_label = 'normal'
+
+    return {
+        'lookback_days': len(recent),
+        'sessions': sessions,
+        'prior_trend_label': prior_trend_label,
+        'prior_volatility_label': prior_volatility_label,
+        'prior_up_days': up_days,
+        'prior_down_days': down_days,
+        'prior_net_return_pct': round(net_return_pct, 4),
+        'prior_avg_range_pct': round(avg_range_pct, 4),
     }
 
 
@@ -360,10 +569,19 @@ def _build_structure_notes(structure: Optional[Dict[str, Any]]) -> str:
     rejections = structure.get('camarilla_rejections') or {}
     rejection_labels = [label for label, active in rejections.items() if active]
     rejection_text = ','.join(rejection_labels) if rejection_labels else 'none'
+    previous_context = structure.get('previous_days_context') or {}
+    previous_context_text = ''
+    if previous_context:
+        previous_context_text = (
+            f" prior3={previous_context.get('prior_trend_label', 'unknown')}/"
+            f"{previous_context.get('prior_volatility_label', 'unknown')}"
+            f" net={float(previous_context.get('prior_net_return_pct') or 0):+.2f}%"
+            f" avgRange={float(previous_context.get('prior_avg_range_pct') or 0):.2f}% |"
+        )
     return (
         f" Structure: open {structure.get('open_relation')} | close {structure.get('close_relation')} | "
         f"CPR {structure.get('cpr_width_bucket')} ({float(structure.get('cpr_width_pct') or 0):.2f}%) | "
-        f"gap {float(structure.get('gap_pct') or 0):+.2f}% | near pivot={bool(structure.get('opened_near_pivot'))} | "
+        f"gap {float(structure.get('gap_pct') or 0):+.2f}% |{previous_context_text} near pivot={bool(structure.get('opened_near_pivot'))} | "
         f"camarilla rejection={rejection_text}."
     )
 
@@ -410,10 +628,12 @@ def evaluate_equity_prediction(
         except Exception:
             instrument_key = None
 
+    candles: List[Dict[str, Any]] = []
     if instrument_key:
-        day_context = _get_day_candle_context(access_token, instrument_key, evaluation_date)
+        day_context, candles = _get_day_candle_bundle(access_token, instrument_key, evaluation_date)
         if day_context:
             current_price = day_context.get('close')
+            data_source = str(day_context.get('source') or data_source)
 
     if current_price is None:
         latest = fetch_market_data(
@@ -440,7 +660,7 @@ def evaluate_equity_prediction(
         if not instrument_key:
             instrument_key = latest.get('instrument_key')
         if instrument_key and day_context is None:
-            day_context = _get_day_candle_context(access_token, instrument_key, evaluation_date)
+            day_context, candles = _get_day_candle_bundle(access_token, instrument_key, evaluation_date)
 
     realized_return_pct = ((float(current_price) - float(entry_reference)) / float(entry_reference)) * 100
     bullish_correct = realized_return_pct > 0
@@ -457,6 +677,8 @@ def evaluate_equity_prediction(
     )
 
     structure = _calculate_day_structure(day_context) if day_context else {}
+    if structure:
+        structure['previous_days_context'] = _build_previous_days_context(candles, target_date=evaluation_date)
 
     return (
         BriefOutcomeRecord(
@@ -510,9 +732,9 @@ def evaluate_index_prediction(
     if not access_token:
         return None, 'upstox access token unavailable'
 
-    day_context = _get_day_candle_context(access_token, instrument_key, evaluation_date)
+    day_context, candles = _get_day_candle_bundle(access_token, instrument_key, evaluation_date)
     current_price = day_context.get('close') if day_context else None
-    source_label = 'upstox_index_day_candle'
+    source_label = str((day_context or {}).get('source') or 'upstox_index_day_candle')
     if current_price is None:
         try:
             quote_payload = _fetch_quote_by_instrument_key(access_token, instrument_key)
@@ -539,6 +761,8 @@ def evaluate_index_prediction(
     )
 
     structure = _calculate_day_structure(day_context) if day_context else {}
+    if structure:
+        structure['previous_days_context'] = _build_previous_days_context(candles, target_date=evaluation_date)
 
     return (
         BriefOutcomeRecord(
@@ -570,6 +794,96 @@ def evaluate_index_prediction(
     )
 
 
+def evaluate_index_regime_prediction(
+    prediction: Dict[str, Any],
+    evaluation_timestamp: datetime,
+    evaluation_date: date,
+    *,
+    access_token: Optional[str],
+    trend_threshold_pct: float = DEFAULT_TREND_THRESHOLD_PCT,
+) -> tuple[BriefOutcomeRecord | None, Optional[str]]:
+    symbol = prediction.get('symbol')
+    prediction_id = prediction.get('prediction_id')
+    regime = _normalize_predicted_direction(prediction.get('predicted_direction'))
+    features = prediction.get('features') or {}
+    instrument_key = features.get('instrument_key') or 'NSE_INDEX|Nifty 50'
+    entry_reference = prediction.get('entry_reference')
+
+    if regime not in SUPPORTED_REGIMES or not prediction_id:
+        return None, 'unsupported market regime'
+    if not access_token:
+        return None, 'upstox access token unavailable'
+
+    day_context, candles = _get_day_candle_bundle(access_token, instrument_key, evaluation_date)
+    if not day_context:
+        return None, 'index day context unavailable'
+
+    day_open = float(day_context.get('open') or 0)
+    day_high = float(day_context.get('high') or 0)
+    day_low = float(day_context.get('low') or 0)
+    day_close = float(day_context.get('close') or 0)
+    absolute_character, up_move_pct, down_move_pct = _classify_absolute_intraday_character(
+        day_open=day_open,
+        day_high=day_high,
+        day_low=day_low,
+        trend_threshold_pct=trend_threshold_pct,
+    )
+    realized_regime = absolute_character
+    is_correct = (regime == 'range_bound' and absolute_character == 'sideways') or (
+        regime == 'trending' and absolute_character == 'trended'
+    )
+    max_extension = max(up_move_pct, down_move_pct)
+    signed_score = (trend_threshold_pct - max_extension) if regime == 'range_bound' else (max_extension - trend_threshold_pct)
+    intraday = {
+        'intraday_character': absolute_character,
+        'absolute_intraday_character': absolute_character,
+        'up_move_pct_from_open': round(up_move_pct, 4),
+        'down_move_pct_from_open': round(down_move_pct, 4),
+        'favorable_move_pct_from_open': round((trend_threshold_pct - max_extension) if regime == 'range_bound' else max_extension, 4),
+        'adverse_move_pct_from_open': round(max_extension, 4),
+        'close_from_open_pct': round(((day_close - day_open) / day_open) * 100, 4) if day_open else 0.0,
+        'trend_threshold_pct': trend_threshold_pct,
+        'regime_eval': {
+            'predicted_regime': regime,
+            'realized_regime': realized_regime,
+            'is_correct': is_correct,
+        },
+    }
+    structure = _calculate_day_structure(day_context)
+    if structure:
+        structure['previous_days_context'] = _build_previous_days_context(candles, target_date=evaluation_date)
+
+    note = (
+        f"EOD review via {day_context.get('source') or 'upstox_index_day_candle'} for {symbol}. "
+        f"Predicted regime {regime}; realized {realized_regime}. "
+        f"Up move from open {up_move_pct:+.2f}% | down move from open {down_move_pct:+.2f}%."
+    )
+
+    return (
+        BriefOutcomeRecord(
+            outcome_id=f"outcome_{prediction_id}_{evaluation_date.isoformat()}",
+            prediction_id=prediction_id,
+            evaluation_timestamp=evaluation_timestamp.isoformat(),
+            evaluation_date=evaluation_date.isoformat(),
+            horizon_label=str(prediction.get('horizon_label') or 'EOD'),
+            realized_direction=realized_regime,
+            realized_return_pct=round(((day_close - float(entry_reference)) / float(entry_reference)) * 100, 4) if entry_reference else None,
+            max_favorable_excursion_pct=round(up_move_pct if regime == 'trending' else trend_threshold_pct - max_extension, 4),
+            max_adverse_excursion_pct=round(down_move_pct if regime == 'trending' else max_extension, 4),
+            bullish_correct=None,
+            bearish_correct=None,
+            score=round(signed_score, 4),
+            notes=note + _build_structure_notes(structure),
+            details={
+                'intraday': intraday,
+                'day_structure': structure,
+                'regime_eval': intraday['regime_eval'],
+            },
+        ),
+        None,
+    )
+
+
 def evaluate_commodity_prediction(
     prediction: Dict[str, Any],
     evaluation_timestamp: datetime,
@@ -592,9 +906,9 @@ def evaluate_commodity_prediction(
     if not access_token:
         return None, 'upstox access token unavailable'
 
-    day_context = _get_day_candle_context(access_token, instrument_key, evaluation_date)
+    day_context, candles = _get_day_candle_bundle(access_token, instrument_key, evaluation_date)
     current_price = day_context.get('close') if day_context else None
-    source_label = 'upstox_commodity_day_candle'
+    source_label = str((day_context or {}).get('source') or 'upstox_commodity_day_candle')
     if current_price is None:
         try:
             quote_payload = _fetch_quote_by_instrument_key(access_token, instrument_key)
@@ -621,6 +935,8 @@ def evaluate_commodity_prediction(
     )
 
     structure = _calculate_day_structure(day_context) if day_context else {}
+    if structure:
+        structure['previous_days_context'] = _build_previous_days_context(candles, target_date=evaluation_date)
 
     return (
         BriefOutcomeRecord(
@@ -671,7 +987,7 @@ def evaluate_macro_prediction(
     if not access_token:
         return None, 'upstox access token unavailable'
 
-    day_context = _get_day_candle_context(access_token, instrument_key, evaluation_date)
+    day_context, candles = _get_day_candle_bundle(access_token, instrument_key, evaluation_date)
     if not day_context:
         return None, 'macro context day candle unavailable'
     previous_close = day_context.get('previous_close')
@@ -691,6 +1007,8 @@ def evaluate_macro_prediction(
     )
 
     structure = _calculate_day_structure(day_context)
+    if structure:
+        structure['previous_days_context'] = _build_previous_days_context(candles, target_date=evaluation_date)
 
     return (
         BriefOutcomeRecord(
@@ -707,7 +1025,7 @@ def evaluate_macro_prediction(
             bearish_correct=bearish_correct,
             score=round(signed_score, 4),
             notes=_build_outcome_notes(
-                source_label='upstox_macro_nifty_context',
+                source_label=str(day_context.get('source') or 'upstox_macro_nifty_context'),
                 symbol=symbol,
                 entry_reference=entry_reference,
                 evaluated_price=current_price,
@@ -740,16 +1058,23 @@ def build_report(
         'two_sided_volatile': 0,
         'unknown': 0,
     }
+    def is_prediction_correct(prediction: Dict[str, Any], outcome: BriefOutcomeRecord) -> bool:
+        direction = _normalize_predicted_direction(str(prediction.get('predicted_direction')))
+        if direction in SUPPORTED_DIRECTIONS:
+            return _is_directionally_correct(direction, outcome)
+        regime_eval = ((outcome.details or {}).get('regime_eval')) or (((outcome.details or {}).get('intraday') or {}).get('regime_eval')) or {}
+        if direction in SUPPORTED_REGIMES:
+            return bool(regime_eval.get('is_correct'))
+        return False
+
     for outcome in evaluated:
         prediction = prediction_map.get(outcome.prediction_id, {})
-        if _is_directionally_correct(str(prediction.get('predicted_direction')), outcome):
+        if is_prediction_correct(prediction, outcome):
             correct += 1
         character = 'unknown'
-        if outcome.notes:
-            for label in ('trended', 'sideways', 'moved_opposite', 'two_sided_volatile'):
-                if f'Intraday character {label}' in outcome.notes:
-                    character = label
-                    break
+        details = outcome.details or {}
+        intraday = details.get('intraday') or {}
+        character = intraday.get('intraday_character') or 'unknown'
         trend_counts[character] = trend_counts.get(character, 0) + 1
 
     summary = {
@@ -775,8 +1100,8 @@ def build_report(
                 'max_favorable_excursion_pct': outcome.max_favorable_excursion_pct,
                 'max_adverse_excursion_pct': outcome.max_adverse_excursion_pct,
                 'details': outcome.details,
-                'is_correct': _is_directionally_correct(
-                    str((prediction_map.get(outcome.prediction_id, {}) or {}).get('predicted_direction')),
+                'is_correct': is_prediction_correct(
+                    (prediction_map.get(outcome.prediction_id, {}) or {}),
                     outcome,
                 ),
                 'notes': outcome.notes,
@@ -822,7 +1147,11 @@ def main() -> int:
     for prediction in predictions:
         asset_class = prediction.get('asset_class')
         direction = _normalize_predicted_direction(prediction.get('predicted_direction'))
-        if asset_class not in SUPPORTED_DIRECTIONAL_ASSET_CLASSES or direction not in SUPPORTED_DIRECTIONS:
+        is_index_regime = asset_class == 'index' and prediction.get('signal_family') == 'market_regime' and direction in SUPPORTED_REGIMES
+        if asset_class not in SUPPORTED_DIRECTIONAL_ASSET_CLASSES:
+            skipped.append(f"{prediction.get('symbol')} ({asset_class}/{direction})")
+            continue
+        if not is_index_regime and direction not in SUPPORTED_DIRECTIONS:
             skipped.append(f"{prediction.get('symbol')} ({asset_class}/{direction})")
             continue
 
@@ -835,13 +1164,22 @@ def main() -> int:
                 trend_threshold_pct=args.trend_threshold_pct,
             )
         elif asset_class == 'index':
-            outcome, skip_reason = evaluate_index_prediction(
-                prediction,
-                evaluation_timestamp,
-                evaluation_date,
-                access_token=access_token,
-                trend_threshold_pct=args.trend_threshold_pct,
-            )
+            if is_index_regime:
+                outcome, skip_reason = evaluate_index_regime_prediction(
+                    prediction,
+                    evaluation_timestamp,
+                    evaluation_date,
+                    access_token=access_token,
+                    trend_threshold_pct=args.trend_threshold_pct,
+                )
+            else:
+                outcome, skip_reason = evaluate_index_prediction(
+                    prediction,
+                    evaluation_timestamp,
+                    evaluation_date,
+                    access_token=access_token,
+                    trend_threshold_pct=args.trend_threshold_pct,
+                )
         elif asset_class == 'commodity':
             outcome, skip_reason = evaluate_commodity_prediction(
                 prediction,
@@ -905,14 +1243,33 @@ def main() -> int:
         details = item.get('details') or {}
         structure = details.get('day_structure') or {}
         character = ((details.get('intraday') or {}).get('intraday_character')) or 'unknown'
-        lines.append(
-            f"{item['prediction_id']}: {item['symbol']} | predicted {item['predicted_direction']} -> realized {item['realized_direction']} | "
-            f"{'CORRECT' if item['is_correct'] else 'WRONG'} | return {item['realized_return_pct']:+.2f}% | "
-            f"intraday {character} | mfe {float(item.get('max_favorable_excursion_pct') or 0):+.2f}% | "
-            f"mae {float(item.get('max_adverse_excursion_pct') or 0):+.2f}% | "
-            f"open {structure.get('open_relation', 'unknown')} | CPR {structure.get('cpr_width_bucket', 'unknown')} | "
-            f"gap {float(structure.get('gap_pct') or 0):+.2f}% | score {item['score']:+.2f}"
-        )
+        prev_ctx = structure.get('previous_days_context') or {}
+        prev_ctx_text = ''
+        if prev_ctx:
+            prev_ctx_text = (
+                f" | prior3 {prev_ctx.get('prior_trend_label', 'unknown')}/"
+                f"{prev_ctx.get('prior_volatility_label', 'unknown')}"
+                f" net {float(prev_ctx.get('prior_net_return_pct') or 0):+.2f}%"
+            )
+        if _normalize_predicted_direction(item['predicted_direction']) in SUPPORTED_REGIMES:
+            intraday = details.get('intraday') or {}
+            lines.append(
+                f"{item['prediction_id']}: {item['symbol']} | predicted {item['predicted_direction']} -> realized {item['realized_direction']} | "
+                f"{'CORRECT' if item['is_correct'] else 'WRONG'} | close {float(item.get('realized_return_pct') or 0):+.2f}% | "
+                f"up {float(intraday.get('up_move_pct_from_open') or 0):+.2f}% | "
+                f"down {float(intraday.get('down_move_pct_from_open') or 0):+.2f}% | "
+                f"open {structure.get('open_relation', 'unknown')} | CPR {structure.get('cpr_width_bucket', 'unknown')} | "
+                f"gap {float(structure.get('gap_pct') or 0):+.2f}%{prev_ctx_text} | score {item['score']:+.2f}"
+            )
+        else:
+            lines.append(
+                f"{item['prediction_id']}: {item['symbol']} | predicted {item['predicted_direction']} -> realized {item['realized_direction']} | "
+                f"{'CORRECT' if item['is_correct'] else 'WRONG'} | return {float(item.get('realized_return_pct') or 0):+.2f}% | "
+                f"intraday {character} | mfe {float(item.get('max_favorable_excursion_pct') or 0):+.2f}% | "
+                f"mae {float(item.get('max_adverse_excursion_pct') or 0):+.2f}% | "
+                f"open {structure.get('open_relation', 'unknown')} | CPR {structure.get('cpr_width_bucket', 'unknown')} | "
+                f"gap {float(structure.get('gap_pct') or 0):+.2f}%{prev_ctx_text} | score {float(item.get('score') or 0):+.2f}"
+            )
 
     if skipped:
         lines.extend(['', 'SKIPPED', '-' * 80])

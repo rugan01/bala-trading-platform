@@ -27,6 +27,7 @@ There is still a separate operational workspace used for day-to-day trading oper
   apps/
     briefing/
     journaling/
+    risk/
     walk-forward/
     analyzers-upstox/legacy/
   packages/
@@ -69,6 +70,8 @@ python3.11 apps/briefing/brief_eod_review.py --source-date YYYY-MM-DD
 
 python3.11 apps/journaling/trade_journaling.py --account BALA
 python3.11 apps/journaling/broker_trade_backfill.py --broker-file /path/to/export.xlsx --date YYYY-MM-DD
+
+./.venv/bin/python apps/risk/mtm_guard.py --account BALA --profit-target 5000 --loss-limit 3000
 
 python3.11 apps/walk-forward/main.py --profile-id silvermic_v3_default --dry-run
 

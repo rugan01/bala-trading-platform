@@ -40,6 +40,21 @@ Key entry points:
 Source history:
 - migrated from `/Users/rugan/balas-product-os/Tools`
 
+### `apps/risk`
+
+Purpose:
+- account-wide MTM monitoring
+- Telegram heartbeat updates
+- Telegram command/control with confirmation
+- guarded Upstox flatten actions
+
+Key entry points:
+- `apps/risk/mtm_guard.py`
+- `apps/risk/README.md`
+
+Source history:
+- new in the monorepo, built on top of existing Upstox token-refresh and Telegram alert patterns
+
 ### `apps/walk-forward`
 
 Purpose:
@@ -109,4 +124,3 @@ Generated local-only paths inside this repo:
 - `data/legacy-analyzers/`
 
 These are intentionally excluded from version control.
-

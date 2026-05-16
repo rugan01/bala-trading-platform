@@ -13,3 +13,12 @@ Recommended workflow:
 3. update the plist paths deliberately
 4. install only the curated plist set
 
+Curated runtime-ready templates now include:
+- `com.bala.mtm-guard.bala.plist`
+
+For MTM guard:
+- replace `__PYTHON_BIN__` with the repo `.venv` python
+- replace `__MTM_GUARD_SCRIPT__` with `apps/risk/mtm_guard.py`
+- replace `__REPO_ROOT__` with the repo root
+- replace the log placeholders with deliberate file paths
+- if you keep `KeepAlive` enabled, a Telegram `/stop` command will terminate the current process instance, but launchd may restart it

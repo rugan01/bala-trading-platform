@@ -562,6 +562,167 @@ def _run_mcx_scanner_output(output_format: str) -> Any:
     return result.stdout
 
 
+def _serialize_mcx_quote(quote_obj: Any) -> Dict[str, Any]:
+    return {
+        'commodity': getattr(quote_obj, 'commodity', None),
+        'ltp': float(getattr(quote_obj, 'ltp', 0) or 0),
+        'open': float(getattr(quote_obj, 'open', 0) or 0),
+        'high': float(getattr(quote_obj, 'high', 0) or 0),
+        'low': float(getattr(quote_obj, 'low', 0) or 0),
+        'close': float(getattr(quote_obj, 'close', 0) or 0),
+        'volume': int(getattr(quote_obj, 'volume', 0) or 0),
+        'change': float(getattr(quote_obj, 'change', 0) or 0),
+        'pct_change': float(getattr(quote_obj, 'pct_change', 0) or 0),
+    }
+
+
+def _serialize_mcx_contract(contract_obj: Any) -> Dict[str, Any]:
+    expiry = getattr(contract_obj, 'expiry', None)
+    if hasattr(expiry, 'isoformat'):
+        expiry = expiry.isoformat()
+    return {
+        'commodity': getattr(contract_obj, 'commodity', None),
+        'instrument_key': getattr(contract_obj, 'instrument_key', None),
+        'trading_symbol': getattr(contract_obj, 'trading_symbol', None),
+        'expiry': expiry,
+        'lot_size': int(getattr(contract_obj, 'lot_size', 0) or 0),
+    }
+
+
+def _build_mcx_comprehensive_text(
+    analyses: Dict[str, Dict[str, Any]],
+    contracts: Dict[str, Dict[str, Any]],
+) -> str:
+    if not analyses:
+        return 'Broader MCX structure analysis unavailable for this run.'
+
+    ordered = [
+        'GOLD', 'GOLDM', 'SILVER', 'SILVERM',
+        'CRUDEOIL', 'NATURALGAS', 'COPPER', 'ZINC',
+        'ALUMINIUM', 'LEAD', 'NICKEL',
+    ]
+
+    lines: list[str] = []
+    lines.append('')
+    lines.append('=' * 98)
+    lines.append('BROADER MCX MARKET STRUCTURE (Upstox Futures)')
+    lines.append('=' * 98)
+    lines.append('This complements the mini-contract intraday scanner above.')
+    lines.append('Main contracts help us understand the bigger metals / energy structure before the evening session.')
+    lines.append('')
+    lines.append(
+        f"{'Commodity':<12} {'Bias':<10} {'Trend':<12} {'Prob':>6} {'Structure':<12} "
+        f"{'LTP':>12} {'Chg%':>8} {'Entry':<18} {'SL':>10} {'T1':>10}"
+    )
+    lines.append('-' * 120)
+
+    for commodity in ordered:
+        analysis = analyses.get(commodity)
+        if not analysis:
+            continue
+
+        if analysis.get('trade_type') == 'NO_TRADE':
+            entry_str = '-'
+            sl_str = '-'
+            t1_str = '-'
+        else:
+            entry_str = f"{analysis['entry_zone_low']:.0f}-{analysis['entry_zone_high']:.0f}"
+            sl_str = f"{analysis['stop_loss']:.0f}"
+            t1_str = f"{analysis['target1']:.0f}"
+
+        lines.append(
+            f"{commodity:<12} {analysis.get('bias', 'NEUTRAL'):<10} {analysis.get('trend', 'SIDEWAYS'):<12} "
+            f"{float(analysis.get('trend_probability', 0)):>5.0f}% {analysis.get('structure', '-'):<12} "
+            f"{float(analysis.get('ltp', 0)):>12.2f} {float(analysis.get('pct_change', 0)):>+7.2f}% "
+            f"{entry_str:<18} {sl_str:>10} {t1_str:>10}"
+        )
+
+    high_probability = [
+        analysis for analysis in analyses.values()
+        if analysis.get('trade_type') != 'NO_TRADE' and float(analysis.get('trend_probability', 0)) >= 65
+    ]
+    if high_probability:
+        lines.append('')
+        lines.append('HIGH PROBABILITY BROADER COMMODITY SETUPS')
+        lines.append('-' * 98)
+        for analysis in sorted(high_probability, key=lambda item: float(item.get('trend_probability', 0)), reverse=True):
+            contract = contracts.get(analysis.get('commodity', ''), {})
+            contract_label = contract.get('trading_symbol') or analysis.get('commodity')
+            lines.append(
+                f"{analysis.get('commodity')}: {analysis.get('trade_type')} | {analysis.get('bias_reason')} | "
+                f"Contract: {contract_label}"
+            )
+            lines.append(
+                f"  Entry {analysis['entry_zone_low']:.2f}-{analysis['entry_zone_high']:.2f} | "
+                f"SL {analysis['stop_loss']:.2f} | T1 {analysis['target1']:.2f} | T2 {analysis['target2']:.2f}"
+            )
+
+    return '\n'.join(lines)
+
+
+def _run_mcx_comprehensive_snapshot() -> SectionResult:
+    try:
+        from mcx_market_analysis import MCXAnalyzer, DEFAULT_COMMODITIES
+
+        analyzer = MCXAnalyzer(env_file=str(PLATFORM_ENV_FILE))
+        analyzer.download_instruments_master()
+        quotes = analyzer.get_live_quotes()
+        historical = analyzer.get_historical_data(days=30)
+
+        serialized_contracts: Dict[str, Dict[str, Any]] = {
+            commodity: _serialize_mcx_contract(contract_obj)
+            for commodity, contract_obj in analyzer.contracts.items()
+        }
+        serialized_quotes: Dict[str, Dict[str, Any]] = {
+            commodity: _serialize_mcx_quote(quote_obj)
+            for commodity, quote_obj in quotes.items()
+        }
+
+        serialized_analyses: Dict[str, Dict[str, Any]] = {}
+        for commodity in DEFAULT_COMMODITIES:
+            if commodity not in historical or not historical[commodity]:
+                continue
+            live_price = quotes[commodity].ltp if commodity in quotes else None
+            analysis = analyzer.generate_comprehensive_analysis(commodity, historical[commodity], live_price)
+            if not analysis:
+                continue
+            serialized_analyses[commodity] = {
+                'commodity': analysis.commodity,
+                'ltp': float(analysis.ltp),
+                'prev_close': float(analysis.prev_close),
+                'change': float(analysis.change),
+                'pct_change': float(analysis.pct_change),
+                'trend': analysis.trend,
+                'trend_strength': analysis.trend_strength,
+                'trend_probability': float(analysis.trend_probability),
+                'structure': analysis.structure,
+                'bias': analysis.bias,
+                'bias_reason': analysis.bias_reason,
+                'trade_type': analysis.trade_type,
+                'entry_zone_low': float(analysis.entry_zone[0]),
+                'entry_zone_high': float(analysis.entry_zone[1]),
+                'stop_loss': float(analysis.stop_loss),
+                'target1': float(analysis.target1),
+                'target2': float(analysis.target2),
+                'risk_reward': float(analysis.risk_reward),
+                'levels': asdict(analysis.levels),
+            }
+
+        text = _build_mcx_comprehensive_text(serialized_analyses, serialized_contracts)
+        return SectionResult(
+            True,
+            text,
+            {
+                'contracts': serialized_contracts,
+                'quotes': serialized_quotes,
+                'analyses': serialized_analyses,
+            },
+        )
+    except Exception as exc:
+        logger.warning('Broader MCX structure analysis failed: %s', exc)
+        return SectionResult(False, f'Broader MCX structure analysis failed: {exc}')
+
+
 def run_mcx_scanner() -> SectionResult:
     logger.info('Running MCX Scanner...')
     try:
@@ -575,8 +736,20 @@ def run_mcx_scanner() -> SectionResult:
             structured_output = _run_mcx_scanner_output('json')
         except Exception as exc:
             logger.warning('MCX structured payload unavailable for this run: %s', exc)
+        comprehensive_result = _run_mcx_comprehensive_snapshot()
 
-        return SectionResult(True, text_output, structured_output)
+        combined_text = text_output
+        if comprehensive_result.success:
+            combined_text = text_output.rstrip() + '\n\n' + comprehensive_result.text
+
+        combined_data = structured_output or {}
+        if comprehensive_result.success and comprehensive_result.data:
+            combined_data['comprehensive'] = comprehensive_result.data
+
+        if not combined_data and comprehensive_result.success:
+            combined_data = comprehensive_result.data
+
+        return SectionResult(True, combined_text, combined_data)
 
     except subprocess.TimeoutExpired:
         return SectionResult(False, 'MCX Scanner timed out')
@@ -665,6 +838,21 @@ def build_quick_summary_lines(
         long_count = sum(1 for setup in setups if setup.get('direction') == 'LONG')
         short_count = sum(1 for setup in setups if setup.get('direction') == 'SHORT')
         summary_lines.append(f'  MCX: {long_count} long setups, {short_count} short setups')
+        comprehensive = mcx_result.data.get('comprehensive', {})
+        analyses = comprehensive.get('analyses', {}) if isinstance(comprehensive, dict) else {}
+        if analyses:
+            bullish = [
+                commodity for commodity, analysis in analyses.items()
+                if analysis.get('bias') == 'BULLISH' and analysis.get('trade_type') != 'NO_TRADE'
+            ]
+            bearish = [
+                commodity for commodity, analysis in analyses.items()
+                if analysis.get('bias') == 'BEARISH' and analysis.get('trade_type') != 'NO_TRADE'
+            ]
+            if bullish:
+                summary_lines.append('  MCX TREND LEADERS: ' + ', '.join(bullish[:4]))
+            if bearish:
+                summary_lines.append('  MCX WEAK NAMES: ' + ', '.join(bearish[:4]))
 
     return summary_lines
 
@@ -695,7 +883,7 @@ def consolidate_reports(
         ('global', 'GLOBAL MARKETS (Overnight Action)', global_result, 'Global Markets'),
         ('nifty', 'INDEX ANALYSIS (Nifty, BankNifty, Sensex)', nifty_result, 'Index Analysis'),
         ('fno', 'F&O STOCK SCANNER (Bullish & Bearish Picks)', fno_result, 'F&O Scanner'),
-        ('mcx', 'MCX COMMODITIES (Evening Session Setup)', mcx_result, 'MCX Scanner'),
+        ('mcx', 'MCX COMMODITIES (Broad Structure + Session Setup)', mcx_result, 'MCX Scanner'),
     ]
 
     stats: Dict[str, Dict[str, Any]] = {}

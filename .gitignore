@@ -18,6 +18,8 @@ data/reports/*
 !data/reports/.gitkeep
 data/legacy-analyzers/*
 !data/legacy-analyzers/.gitkeep
+data/runtime/*
+!data/runtime/.gitkeep
 
 apps/**/output/
 apps/**/.mypy_cache/

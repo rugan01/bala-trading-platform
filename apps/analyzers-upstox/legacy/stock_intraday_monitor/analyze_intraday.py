@@ -25,6 +25,7 @@ DEFAULT_UNIVERSE_FILE = LEGACY_ROOT / "stock_fo_monitor" / "universe_nifty_fo.tx
 NSE_INSTRUMENT_URL = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
 QUOTE_URL = "https://api.upstox.com/v2/market-quote/quotes"
 HISTORICAL_URL = "https://api.upstox.com/v3/historical-candle"
+INTRADAY_URL = "https://api.upstox.com/v3/historical-candle/intraday"
 ENV_KEYS = ("UPSTOX_ACCESS_TOKEN", "ACCESS_TOKEN", "UPSTOX_TOKEN")
 INDEX_KEYS = {
     "NIFTY": "NSE_INDEX|Nifty 50",
@@ -174,26 +175,40 @@ def find_quote(quotes: dict[str, Any], instrument_key: str, trading_symbol: str)
 
 def fetch_candles(token: str, instrument_key: str, unit: str, interval: str, days_back: int) -> list[Candle]:
     headers = {"Accept": "application/json", "Authorization": f"Bearer {token}"}
+    encoded = quote(instrument_key, safe="")
+
+    def _rows_to_candles(rows: list[list[Any]]) -> list[Candle]:
+        candles = [
+            Candle(
+                ts=row[0],
+                open=float(row[1]),
+                high=float(row[2]),
+                low=float(row[3]),
+                close=float(row[4]),
+                volume=float(row[5]),
+            )
+            for row in rows
+        ]
+        candles.sort(key=lambda item: item.ts)
+        return candles
+
+    if unit == "minutes":
+        intraday_url = f"{INTRADAY_URL}/{encoded}/{unit}/{interval}"
+        response = requests.get(intraday_url, headers=headers, timeout=20)
+        response.raise_for_status()
+        rows = response.json().get("data", {}).get("candles", [])
+        candles = _rows_to_candles(rows)
+        same_day = [c for c in candles if candle_date(c) == date.today()]
+        if same_day:
+            return same_day
+
     end_date = date.today()
     start_date = end_date - timedelta(days=days_back)
-    encoded = quote(instrument_key, safe="")
-    url = f"{HISTORICAL_URL}/{encoded}/{unit}/{interval}/{end_date.isoformat()}/{start_date.isoformat()}"
-    response = requests.get(url, headers=headers, timeout=20)
+    historical_url = f"{HISTORICAL_URL}/{encoded}/{unit}/{interval}/{end_date.isoformat()}/{start_date.isoformat()}"
+    response = requests.get(historical_url, headers=headers, timeout=20)
     response.raise_for_status()
     rows = response.json().get("data", {}).get("candles", [])
-    candles = [
-        Candle(
-            ts=row[0],
-            open=float(row[1]),
-            high=float(row[2]),
-            low=float(row[3]),
-            close=float(row[4]),
-            volume=float(row[5]),
-        )
-        for row in rows
-    ]
-    candles.sort(key=lambda item: item.ts)
-    return candles
+    return _rows_to_candles(rows)
 
 
 def candle_date(candle: Candle) -> date | None:
@@ -447,7 +462,7 @@ def build_snapshot(
 ) -> IntradaySnapshot:
     if quote is None:
         raise RuntimeError(f"Missing live quote for {symbol}")
-    if len(daily_candles) < 100 or len(candles_15m) < 5:
+    if len(daily_candles) < 100 or len(candles_15m) < 2:
         raise RuntimeError(f"Not enough candles for {symbol}")
     intraday_fresh = candle_date(candles_15m[-1]) == date.today()
 
@@ -608,6 +623,9 @@ def build_snapshot(
     if not intraday_fresh:
         actionable = False
         action_reason = "15m intraday candles are stale from a prior session; use live chart confirmation instead."
+    elif len(candles_15m) < 4:
+        actionable = False
+        action_reason = "15m intraday structure is still immature in the first hour; use live chart confirmation before acting."
 
     return IntradaySnapshot(
         symbol=symbol,

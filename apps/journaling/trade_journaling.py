@@ -287,6 +287,70 @@ class UpstoxClient:
         response.raise_for_status()
         return response
 
+    @staticmethod
+    def _quote_payload_row(payload: dict, instrument_key: str) -> Optional[dict]:
+        data = payload.get('data', {}) if isinstance(payload, dict) else {}
+        direct = data.get(instrument_key)
+        if direct:
+            return direct
+        alt = data.get(instrument_key.replace('|', ':'))
+        if alt:
+            return alt
+        for _, value in data.items():
+            if value.get('instrument_token') == instrument_key:
+                return value
+        return None
+
+    @staticmethod
+    def _quote_mark(quote_row: dict) -> Optional[float]:
+        if not quote_row:
+            return None
+
+        for key in ('last_price', 'ltp'):
+            value = quote_row.get(key)
+            if value is not None:
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    pass
+
+        depth = quote_row.get('depth') or {}
+        buys = depth.get('buy') or []
+        sells = depth.get('sell') or []
+        best_bid = float(buys[0].get('price') or 0.0) if buys else 0.0
+        best_ask = float(sells[0].get('price') or 0.0) if sells else 0.0
+        if best_bid > 0 and best_ask > 0:
+            return round((best_bid + best_ask) / 2, 2)
+        if best_ask > 0:
+            return best_ask
+        if best_bid > 0:
+            return best_bid
+
+        ohlc = quote_row.get('ohlc') or {}
+        close_value = ohlc.get('close')
+        if close_value is not None:
+            try:
+                return float(close_value)
+            except (TypeError, ValueError):
+                pass
+        return None
+
+    def get_quote_mark(self, instrument_key: str) -> Optional[float]:
+        """Fetch the best available mark/close for an instrument from Upstox quotes."""
+        response = self._request_get(
+            f"{self.BASE_URL}/market-quote/quotes",
+            params={"instrument_key": instrument_key},
+            timeout=20,
+        )
+        payload = response.json()
+        if payload.get('status') != 'success':
+            raise Exception(f"Quote API error: {payload}")
+
+        row = self._quote_payload_row(payload, instrument_key)
+        if not row:
+            raise RuntimeError(f"No quote returned for {instrument_key}")
+        return self._quote_mark(row)
+
     def get_completed_orders(self, target_date: Optional[date] = None) -> list[Order]:
         """Fetch completed trades for the requested date.
 
@@ -2202,6 +2266,179 @@ class TradeProcessor:
             journal_key=journal_key,
         )
 
+    @staticmethod
+    def _option_contract_key(
+        symbol: str,
+        expiry_date: Optional[date],
+        option_type: Optional[str],
+        option_strike: Optional[float],
+    ) -> Optional[tuple[str, date, str, float]]:
+        if not expiry_date or not option_type or option_strike is None:
+            return None
+        return (
+            symbol.upper(),
+            expiry_date,
+            option_type.strip().title(),
+            float(option_strike),
+        )
+
+    def _build_same_day_expiry_token_map(
+        self,
+        orders: list[Order],
+        expiry_date: date,
+    ) -> dict[tuple[str, date, str, float], str]:
+        token_map: dict[tuple[str, date, str, float], str] = {}
+
+        for order in orders:
+            if not order.instrument_token:
+                continue
+
+            parsed = self.upstox.parse_trading_symbol(order.trading_symbol)
+            if not parsed.is_option or parsed.option_type is None or parsed.strike is None:
+                continue
+
+            try:
+                inst_details = self.upstox.get_instrument_details(
+                    order.trading_symbol,
+                    order.exchange,
+                    order.instrument_token,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not resolve instrument details for %s while building expiry close map: %s",
+                    order.trading_symbol,
+                    exc,
+                )
+                inst_details = {}
+
+            normalized_expiry = self._normalized_expiry_date(parsed, inst_details)
+            if normalized_expiry != expiry_date:
+                continue
+
+            key = self._option_contract_key(
+                parsed.base_symbol,
+                normalized_expiry,
+                parsed.option_type,
+                parsed.strike,
+            )
+            if key:
+                token_map[key] = order.instrument_token
+
+        return token_map
+
+    def close_same_day_expired_options(
+        self,
+        expiry_date: date,
+        orders: list[Order],
+    ) -> list[dict]:
+        """
+        Auto-close same-day expiring option rows that remain open after order matching.
+
+        This catches 0DTE / same-day-expiry contracts that were left open in Notion
+        because no offsetting buyback order was placed before expiry.
+        """
+        self.load_open_positions()
+        token_map = self._build_same_day_expiry_token_map(orders, expiry_date)
+        if not token_map:
+            logger.info("No same-day option instrument tokens were available for expiry auto-close.")
+            return []
+
+        candidate_positions = [
+            pos for pos in self.open_positions
+            if self._position_belongs_to_account(pos)
+            and pos.expiry_date == expiry_date
+            and pos.option_type is not None
+            and pos.option_strike is not None
+            and pos.instrument_type in ('Equity Options', 'Index Options', 'Commodity Options')
+        ]
+        if not candidate_positions:
+            logger.info("No same-day expiring open option rows found for auto-close.")
+            return []
+
+        closures: list[dict] = []
+        for position in candidate_positions:
+            key = self._option_contract_key(
+                position.symbol,
+                position.expiry_date,
+                position.option_type,
+                position.option_strike,
+            )
+            if not key:
+                continue
+
+            instrument_token = token_map.get(key)
+            if not instrument_token:
+                logger.warning(
+                    "Could not infer Upstox instrument token for expired %s %s %s %.2f.",
+                    position.symbol,
+                    position.expiry_date,
+                    position.option_type,
+                    float(position.option_strike),
+                )
+                continue
+
+            try:
+                final_price = self.upstox.get_quote_mark(instrument_token)
+            except Exception as exc:
+                logger.warning(
+                    "Could not fetch expiry close quote for %s (%s): %s",
+                    position.label or position.page_id,
+                    instrument_token,
+                    exc,
+                )
+                continue
+
+            if final_price is None:
+                logger.warning(
+                    "Upstox returned no usable mark for expired %s (%s).",
+                    position.label or position.page_id,
+                    instrument_token,
+                )
+                continue
+
+            if position.direction == 'Long':
+                pnl = (final_price - position.entry_price) * position.quantity * position.lot_size
+            else:
+                pnl = (position.entry_price - final_price) * position.quantity * position.lot_size
+
+            outcome = 'Win' if pnl > 0 else 'Loss' if pnl < 0 else 'Breakeven'
+            timeframe = 'Intraday' if position.entry_date == expiry_date else 'Positional'
+
+            logger.info(
+                "Auto-closing expired %s at %.2f (token %s) -> P&L %.2f",
+                position.label or position.page_id,
+                final_price,
+                instrument_token,
+                pnl,
+            )
+            self._update_existing_position(
+                position=position,
+                exit_date=expiry_date,
+                exit_time='15:30',
+                exit_price=round(final_price, 2),
+                pnl=round(pnl, 2),
+                fees=position.fees,
+                status='Closed',
+                outcome=outcome,
+                timeframe=timeframe,
+                quantity=position.quantity,
+                journal_key=position.journal_key,
+            )
+            self.updated_existing_positions.append(position.page_id)
+            closures.append({
+                'page_id': position.page_id,
+                'label': position.label,
+                'symbol': position.symbol,
+                'strike': position.option_strike,
+                'option_type': position.option_type,
+                'instrument_token': instrument_token,
+                'exit_price': round(final_price, 2),
+                'pnl': round(pnl, 2),
+                'timeframe': timeframe,
+            })
+
+        return closures
+
     def _annotate_option_adjustments(self, trade_entries: list[TradeEntry]) -> None:
         """
         Mark newly added option legs as spread adjustments when they are added
@@ -2711,7 +2948,24 @@ def main():
             run_summary.get('new_closed_entries', 0),
         )
 
+        expiry_closures: list[dict] = []
+
         if not trade_entries:
+            expiry_closures = processor.close_same_day_expired_options(
+                target_date or date.today(),
+                orders,
+            )
+            if expiry_closures:
+                logger.info("Auto-closed %s same-day expiring option row(s).", len(expiry_closures))
+                for item in expiry_closures:
+                    logger.info(
+                        "  %s -> Exit %.2f | P&L %.2f | Timeframe %s",
+                        item.get('label') or item.get('page_id'),
+                        item['exit_price'],
+                        item['pnl'],
+                        item['timeframe'],
+                    )
+
             if processor.updated_existing_positions:
                 logger.info(
                     "No new trade rows were needed. Updated %s existing Notion position(s).",
@@ -2742,8 +2996,23 @@ def main():
         logger.info("\nCreating Notion journal entries...")
         results = processor.create_journal_entries(trade_entries, args.dry_run)
 
+        expiry_closures = processor.close_same_day_expired_options(
+            target_date or date.today(),
+            orders,
+        )
+        if expiry_closures:
+            logger.info("\nAuto-closed same-day expiring option rows:")
+            for item in expiry_closures:
+                logger.info(
+                    "  %s -> Exit %.2f | P&L %.2f | Timeframe %s",
+                    item.get('label') or item.get('page_id'),
+                    item['exit_price'],
+                    item['pnl'],
+                    item['timeframe'],
+                )
+
         # Summary
-        total_pnl = sum(e.pnl for e in trade_entries)
+        total_pnl = sum(e.pnl for e in trade_entries) + sum(item['pnl'] for item in expiry_closures)
         total_fees = sum(e.fees for e in trade_entries)
         net_pnl = total_pnl - total_fees
 

@@ -6,9 +6,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[4]
 PACKAGE_ROOT = REPO_ROOT / "packages" / "trading_platform"
 DATA_ROOT = REPO_ROOT / "data"
+RUNTIME_ROOT = DATA_ROOT / "runtime"
 ARCHIVE_ROOT = DATA_ROOT / "archive"
 REPORTS_ROOT = DATA_ROOT / "reports"
 PREMARKET_REPORTS_ROOT = REPORTS_ROOT / "premarket"
 LEGACY_ANALYZER_OUTPUT_ROOT = DATA_ROOT / "legacy-analyzers"
+RISK_RUNTIME_ROOT = RUNTIME_ROOT / "risk"
 ENV_FILE = REPO_ROOT / ".env"
-

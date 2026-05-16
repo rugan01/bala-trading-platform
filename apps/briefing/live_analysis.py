@@ -12,6 +12,7 @@ import sys
 import json
 import argparse
 import logging
+import time
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -53,6 +54,44 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DEFAULT_LIVE_OUTPUT_DIR = DEFAULT_OUTPUT_DIR / 'live'
+
+
+def _has_meaningful_section_data(section: str, result: SectionResult) -> bool:
+    if not result.success or not result.data:
+        return False
+    data = result.data or {}
+    if section == 'nifty':
+        return bool(data.get('index_snapshots') or data.get('spot'))
+    if section == 'fno':
+        return bool(data.get('bullish_stocks') or data.get('bearish_stocks') or data.get('skipped_stocks'))
+    if section == 'mcx':
+        return bool(data.get('setups') or data.get('comprehensive'))
+    return bool(data)
+
+
+def _run_section_with_retry(
+    section: str,
+    runner,
+    *,
+    retries: int = 1,
+    sleep_seconds: float = 1.5,
+) -> SectionResult:
+    attempts = retries + 1
+    last_result: SectionResult | None = None
+    for attempt in range(1, attempts + 1):
+        result = runner()
+        last_result = result
+        if _has_meaningful_section_data(section, result):
+            return result
+        if attempt < attempts:
+            logger.warning(
+                "Live analysis section %s returned incomplete data on attempt %s/%s; retrying...",
+                section,
+                attempt,
+                attempts,
+            )
+            time.sleep(sleep_seconds)
+    return last_result or SectionResult(False, f'{section} section did not run')
 
 
 def _serialize_section_result(result: SectionResult) -> Dict[str, Any]:
@@ -430,11 +469,11 @@ def main() -> int:
     live_mcx = SectionResult(False, 'Skipped')
 
     if 'nifty' in sections_to_run:
-        live_nifty = run_nifty_analysis(mode='live')
+        live_nifty = _run_section_with_retry('nifty', lambda: run_nifty_analysis(mode='live'))
     if 'fno' in sections_to_run:
-        live_fno = run_fno_scanner(mode='live')
+        live_fno = _run_section_with_retry('fno', lambda: run_fno_scanner(mode='live'))
     if 'mcx' in sections_to_run:
-        live_mcx = run_mcx_scanner()
+        live_mcx = _run_section_with_retry('mcx', run_mcx_scanner)
 
     checks: List[LiveAnalysisCheckRecord] = []
     if 'nifty' in sections_to_run:

@@ -91,6 +91,82 @@ Token refresh:
 ./.venv/bin/python apps/journaling/upstox_token_refresh.py --account ALL
 ```
 
+## MTM guard and Telegram controls
+
+Set these local `.env` values before using the MTM guard:
+
+```env
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+TELEGRAM_ALERT_CHAT_ID=
+TELEGRAM_CONTROL_CHAT_IDS=
+TELEGRAM_ALLOWED_USER_IDS=
+```
+
+Notes:
+- `TELEGRAM_ALERT_CHAT_ID` falls back to `TELEGRAM_CHAT_ID`
+- `TELEGRAM_ALLOWED_USER_IDS` is required for command/control
+- `TELEGRAM_CONTROL_CHAT_IDS` is optional but recommended
+
+Run the account-wide MTM guard:
+
+```bash
+cd /path/to/bala-trading-platform
+./.venv/bin/python apps/risk/mtm_guard.py --account BALA --profit-target 5000 --loss-limit 3000
+```
+
+Read-only status check:
+
+```bash
+./.venv/bin/python apps/risk/mtm_guard.py --account BALA --once
+```
+
+Print recent Telegram chat/user identities for control bootstrap:
+
+```bash
+./.venv/bin/python apps/risk/mtm_guard.py --account BALA --print-telegram-identities
+```
+
+Dry-run the flatten action:
+
+```bash
+./.venv/bin/python apps/risk/mtm_guard.py --account BALA --dry-run-close
+```
+
+Supported Telegram commands from a private bot chat or whitelisted admin group:
+
+```text
+/status
+/set limits 5000 3000
+/set profit 5000
+/set loss 3000
+/pause
+/resume
+/stop
+/close
+```
+
+You can also specify the account explicitly:
+
+```text
+/status BALA
+/set BALA limits 5000 3000
+/close BALA
+```
+
+Important safety behavior:
+- state-changing commands require confirmation
+- close-all requires a second confirm click
+- `/pause` keeps the bot/process alive while stopping active guard behavior
+- `/stop` terminates the running MTM guard process after confirmation
+- if `TELEGRAM_ALLOWED_USER_IDS` is not configured, Telegram control is disabled
+- runtime state is stored in `data/runtime/risk/`
+
+Launchd:
+- template: `ops/launchd/com.bala.mtm-guard.bala.plist`
+- replace the `__...__` placeholders before loading it
+- use the repo `.venv` python and point the script path to `apps/risk/mtm_guard.py`
+
 ## Walk-forward engine
 
 ```bash
