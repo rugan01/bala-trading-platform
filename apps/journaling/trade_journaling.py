@@ -22,7 +22,7 @@ import logging
 import gzip
 import io
 import subprocess
-from datetime import datetime, date, time
+from datetime import datetime, date, time, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -135,6 +135,7 @@ class Order:
     average_price: float
     order_timestamp: datetime
     exchange: str
+    product: str = 'I'
     instrument_token: Optional[str] = None
     time_text: Optional[str] = None
     trade_id: Optional[str] = None
@@ -284,7 +285,13 @@ class UpstoxClient:
             self._refresh_attempted = True
             self._refresh_access_token()
             response = requests.get(url, headers=self.headers, params=params, timeout=timeout)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            detail = response.text.strip()
+            if len(detail) > 1000:
+                detail = f"{detail[:1000]}..."
+            raise requests.HTTPError(f"{exc} | response_body={detail}", response=response) from exc
         return response
 
     @staticmethod
@@ -396,6 +403,8 @@ class UpstoxClient:
             raise Exception(f"API error: {data}")
 
         orders = []
+        seen_trade_signatures: set[tuple] = set()
+        duplicate_count = 0
         for item in data.get('data', []):
             # The trades-for-day endpoint already returns executed trades.
             # Some payloads do not include a "status" field at all, so only
@@ -410,6 +419,22 @@ class UpstoxClient:
             )
             if target_date is not None and order_timestamp.date() != target_date:
                 continue
+
+            signature = (
+                item.get('order_id'),
+                item.get('trade_id') or item.get('order_id'),
+                item.get('trading_symbol') or item.get('tradingsymbol', ''),
+                item.get('transaction_type'),
+                int(item.get('quantity') or 0),
+                float(item.get('average_price') or 0.0),
+                item.get('exchange'),
+                item.get('order_timestamp'),
+            )
+            if signature in seen_trade_signatures:
+                duplicate_count += 1
+                continue
+            seen_trade_signatures.add(signature)
+
             orders.append(Order(
                 order_id=item['order_id'],
                 trading_symbol=item.get('trading_symbol') or item.get('tradingsymbol', ''),
@@ -418,6 +443,7 @@ class UpstoxClient:
                 average_price=item['average_price'],
                 order_timestamp=order_timestamp,
                 exchange=item['exchange'],
+                product=item.get('product') or 'I',
                 instrument_token=item.get('instrument_token'),
                 # For same-day trade journaling, Upstox order book time aligns with
                 # order_timestamp. In live testing, exchange_timestamp can be shifted
@@ -425,6 +451,13 @@ class UpstoxClient:
                 time_text=self._safe_time_text(item.get('order_timestamp') or item.get('exchange_timestamp')),
                 trade_id=item.get('trade_id') or item.get('order_id'),
             ))
+
+        if duplicate_count:
+            logger.info(
+                "[%s] Skipped %s duplicate same-day trade row(s) from Upstox trades-for-day API.",
+                self.account,
+                duplicate_count,
+            )
 
         return orders
 
@@ -488,6 +521,7 @@ class UpstoxClient:
             average_price=float(item['price']),
             order_timestamp=datetime.combine(trade_date, time.min),
             exchange=exchange,
+            product=item.get('product') or item.get('product_type') or 'I',
             instrument_token=instrument_token,
             time_text=time_text,
             trade_id=item.get('trade_id') or order_id,
@@ -577,7 +611,9 @@ class UpstoxClient:
                         'instrument_key': inst['instrument_key'],
                         'lot_size': inst.get('lot_size', 1),
                         'expiry': inst.get('expiry'),
-                        'base_symbol': base_symbol
+                        'base_symbol': base_symbol,
+                        'strike_price': inst.get('strike_price'),
+                        'instrument_type': inst.get('instrument_type'),
                     }
                     self._instruments_cache[cache_key] = result
                     return result
@@ -592,7 +628,9 @@ class UpstoxClient:
                             'instrument_key': inst['instrument_key'],
                             'lot_size': inst.get('lot_size', 1),
                             'expiry': inst.get('expiry'),
-                            'base_symbol': base_symbol
+                            'base_symbol': base_symbol,
+                            'strike_price': inst.get('strike_price'),
+                            'instrument_type': inst.get('instrument_type'),
                         }
                         self._instruments_cache[cache_key] = result
                         return result
@@ -615,7 +653,9 @@ class UpstoxClient:
                             'instrument_key': inst.get('instrument_key'),
                             'lot_size': inst.get('lot_size', 1),
                             'expiry': inst.get('expiry'),
-                            'base_symbol': base_symbol
+                            'base_symbol': base_symbol,
+                            'strike_price': inst.get('strike_price'),
+                            'instrument_type': inst.get('instrument_type'),
                         }
                         self._instruments_cache[cache_key] = result
                         return result
@@ -631,7 +671,9 @@ class UpstoxClient:
                             'instrument_key': None if parsed.instrument_type in ('FUT', 'CE', 'PE') else inst['instrument_key'],
                             'lot_size': inst.get('lot_size', 1),
                             'expiry': inst.get('expiry'),
-                            'base_symbol': base_symbol
+                            'base_symbol': base_symbol,
+                            'strike_price': inst.get('strike_price'),
+                            'instrument_type': inst.get('instrument_type'),
                         }
                         self._instruments_cache[cache_key] = result
                         return result
@@ -788,6 +830,24 @@ class UpstoxClient:
 
                 # Standard NSE options format: YYMMMSTRIKE or YYMMMDDSTRIKE
                 if strike is None:
+                    # Some current-day index symbols arrive as DDMMMSTRIKE,
+                    # e.g. NIFTY26MAY23850PE means 26-May expiry, 23850 strike.
+                    # Guard with a plausible strike check so legacy YYMMMDDSTRIKE
+                    # symbols such as NIFTY26APR2824100CE still parse correctly.
+                    index_day_first_match = re.match(r'^(\d{1,2})([A-Z]{3})(\d+(?:\.\d+)?)(CE|PE)$', remainder)
+                    if base_symbol in INDEX_SYMBOLS and index_day_first_match:
+                        day_candidate = int(index_day_first_match.group(1))
+                        strike_candidate = float(index_day_first_match.group(3))
+                        if 1 <= day_candidate <= 31 and 1_000 <= strike_candidate <= 200_000:
+                            strike = strike_candidate
+                            current_year_short = datetime.now().year % 100
+                            date_part = (
+                                f"{day_candidate:02d}"
+                                f"{index_day_first_match.group(2)}"
+                                f"{current_year_short:02d}"
+                            )
+
+                if strike is None:
                     # Monthly: 26APR26000CE -> YY=26, MMM=APR, STRIKE=26000
                     # Weekly:  26APR1726000CE -> YY=26, MMM=APR, DD=17, STRIKE=26000
                     yymm_match = re.match(r'^(\d{2})([A-Z]{3})(.+)(CE|PE)$', remainder)
@@ -926,14 +986,15 @@ class UpstoxClient:
         instrument_token: str,
         quantity: int,
         transaction_type: str,
-        price: float
+        price: float,
+        product: str = 'I',
     ) -> float:
         """Calculate brokerage and fees for a trade leg."""
         url = f"{self.BASE_URL}/charges/brokerage"
         params = {
             'instrument_token': instrument_token,
             'quantity': quantity,
-            'product': 'I',  # Intraday
+            'product': product or 'I',
             'transaction_type': transaction_type,
             'price': price
         }
@@ -942,10 +1003,12 @@ class UpstoxClient:
 
         data = response.json()
         if data.get('status') != 'success':
-            logger.warning(f"Brokerage API error: {data}")
-            return 0.0
+            raise RuntimeError(f"Brokerage API error: {data}")
 
-        return data.get('data', {}).get('charges', {}).get('total', 0.0)
+        total = data.get('data', {}).get('charges', {}).get('total')
+        if total is None:
+            raise RuntimeError(f"Brokerage API returned no total charges: {data}")
+        return float(total)
 
 
 class NotionClient:
@@ -1294,7 +1357,9 @@ class NotionClient:
             expiry_date = datetime.fromisoformat(expiry_date_str).date() if expiry_date_str else None
 
             # Parse option fields
-            option_type = props.get('Option Type', {}).get('select', {}).get('name')
+            option_type_payload = props.get('Option Type', {}) or {}
+            option_type_select = option_type_payload.get('select') or {}
+            option_type = option_type_select.get('name')
             option_strike = props.get('Option Strike', {}).get('number')
 
             # Parse status
@@ -1353,7 +1418,6 @@ class NotionClient:
             "Status": {"select": {"name": status}},
             "Outcome": {"select": {"name": outcome}},
             "Timeframe": {"select": {"name": timeframe}},
-            "Target": {"number": round(exit_price, 2)}
         }
 
         # Update quantity if provided (for partial closes)
@@ -1487,12 +1551,30 @@ class TradeProcessor:
         expiry_value = inst_details.get('expiry')
         if isinstance(expiry_value, date):
             return expiry_value
+        if isinstance(expiry_value, (int, float)):
+            # Upstox instruments master returns derivative expiry as epoch
+            # milliseconds. Use UTC date so the exchange expiry day is preserved.
+            try:
+                return datetime.fromtimestamp(float(expiry_value) / 1000, timezone.utc).date()
+            except (OverflowError, OSError, ValueError):
+                pass
         if expiry_value and parsed.instrument_type in ('FUT', 'CE', 'PE'):
             try:
                 return date.fromisoformat(expiry_value)
             except (TypeError, ValueError):
                 pass
         return parsed.expiry_date
+
+    @staticmethod
+    def _normalized_option_strike(parsed: ParsedInstrument, inst_details: dict) -> Optional[float]:
+        """Prefer the broker instrument-master strike when present."""
+        strike_value = inst_details.get('strike_price')
+        if strike_value not in (None, ''):
+            try:
+                return float(strike_value)
+            except (TypeError, ValueError):
+                pass
+        return parsed.strike
 
     def _expiry_dates_match(self, left: Optional[date], right: Optional[date], symbol: str) -> bool:
         if left == right:
@@ -1583,6 +1665,7 @@ class TradeProcessor:
         total_close_qty = sum(o.quantity for o in orders)
         close_direction = 'Long' if orders[0].transaction_type == 'BUY' else 'Short'
         normalized_expiry = self._normalized_expiry_date(parsed, inst_details)
+        normalized_strike = self._normalized_option_strike(parsed, inst_details)
 
         # Get contract multiplier for P&L calculation
         exchange = orders[0].exchange
@@ -1609,12 +1692,16 @@ class TradeProcessor:
             exit_fees = sum(
                 self.upstox.calculate_brokerage(
                     instrument_token, o.quantity,
-                    o.transaction_type, o.average_price
+                    o.transaction_type, o.average_price,
+                    product=o.product,
                 )
                 for o in orders
             )
         else:
-            exit_fees = 25.0 * len(orders)
+            raise RuntimeError(
+                f"Cannot calculate accurate exit fees for {orders[0].trading_symbol}: "
+                "missing instrument token"
+            )
 
         # Determine how much of the open position is being closed
         display_lot_size = self._display_lot_size(exchange, parsed, inst_details)
@@ -1708,7 +1795,7 @@ class TradeProcessor:
                     status='Open',
                     expiry_date=normalized_expiry,
                     option_type=parsed.option_type,
-                    option_strike=parsed.strike,
+                    option_strike=normalized_strike,
                     entry_source_ids=[self._source_id_for_order(order) for order in orders],
                 )
                 self._ensure_trade_journal_key(excess_entry)
@@ -1834,8 +1921,9 @@ class TradeProcessor:
                 symbol_orders[0].instrument_token
             )
             normalized_expiry = self._normalized_expiry_date(parsed, inst_details)
+            normalized_strike = self._normalized_option_strike(parsed, inst_details)
             logger.info(f"Processing symbol: {trading_symbol} -> base={parsed.base_symbol}, "
-                        f"expiry={normalized_expiry}, strike={parsed.strike}, type={parsed.instrument_type}")
+                        f"expiry={normalized_expiry}, strike={normalized_strike}, type={parsed.instrument_type}")
 
             # Separate buy and sell orders
             buys = [o for o in symbol_orders if o.transaction_type == 'BUY']
@@ -1845,10 +1933,10 @@ class TradeProcessor:
             # Check for open positions that could be closed by these orders
             # BUY orders close SHORT positions, SELL orders close LONG positions
             long_positions = self.find_matching_open_positions(
-                parsed.base_symbol, 'Long', normalized_expiry, parsed.strike
+                parsed.base_symbol, 'Long', normalized_expiry, normalized_strike
             )
             short_positions = self.find_matching_open_positions(
-                parsed.base_symbol, 'Short', normalized_expiry, parsed.strike
+                parsed.base_symbol, 'Short', normalized_expiry, normalized_strike
             )
             logger.info(f"  Matching positions: {len(long_positions)} Long, {len(short_positions)} Short")
 
@@ -2059,10 +2147,14 @@ class TradeProcessor:
                         instrument_token,
                         closed_qty * display_lot_size if exchange != 'MCX' else closed_qty,
                         'BUY' if position.direction == 'Short' else 'SELL',
-                        avg_exit_price
+                        avg_exit_price,
+                        product=matched_orders[-1]['order'].product,
                     )
                 else:
-                    exit_fees = 25.0
+                    raise RuntimeError(
+                        f"Cannot calculate accurate exit fees for {position.symbol}: "
+                        "missing instrument token"
+                    )
 
                 # Calculate P&L
                 raw_qty = closed_qty * display_lot_size if exchange != 'MCX' else closed_qty
@@ -2177,19 +2269,38 @@ class TradeProcessor:
         remaining_orders = []
         for oq in order_queue:
             if oq['remaining_qty'] > 0:
-                # If order was partially used, we need to handle it carefully
-                # For now, we skip partially-used orders to avoid double-counting
-                # Only include orders that were not used at all
                 if oq['remaining_qty'] == oq['original_qty']:
                     remaining_orders.append(oq['order'])
                 else:
-                    # Partially used order - log warning
-                    # The remaining quantity won't create new positions
-                    # (This handles edge cases like over-selling)
-                    logger.warning(
-                        f"Order {oq['order'].order_id} partially used: "
-                        f"{oq['original_qty'] - oq['remaining_qty']}/{oq['original_qty']} qty consumed"
+                    # Carry the residual forward so an over-close can still
+                    # flatten or flip same-day orders in the second pass.
+                    raw_remaining_qty = (
+                        int(oq['remaining_qty'])
+                        if exchange == 'MCX'
+                        else int(oq['remaining_qty'] * display_lot_size)
                     )
+                    logger.warning(
+                        "Order %s partially used: %s/%s qty consumed; carrying %s qty forward",
+                        oq['order'].order_id,
+                        oq['original_qty'] - oq['remaining_qty'],
+                        oq['original_qty'],
+                        oq['remaining_qty'],
+                    )
+                    if raw_remaining_qty > 0:
+                        original_order = oq['order']
+                        remaining_orders.append(Order(
+                            order_id=original_order.order_id,
+                            trading_symbol=original_order.trading_symbol,
+                            transaction_type=original_order.transaction_type,
+                            quantity=raw_remaining_qty,
+                            average_price=original_order.average_price,
+                            order_timestamp=original_order.order_timestamp,
+                            exchange=original_order.exchange,
+                            product=original_order.product,
+                            instrument_token=original_order.instrument_token,
+                            time_text=original_order.time_text,
+                            trade_id=original_order.trade_id,
+                        ))
 
         return used_orders, remaining_orders, closed_positions
 
@@ -2294,7 +2405,7 @@ class TradeProcessor:
                 continue
 
             parsed = self.upstox.parse_trading_symbol(order.trading_symbol)
-            if not parsed.is_option or parsed.option_type is None or parsed.strike is None:
+            if not parsed.is_option or parsed.option_type is None:
                 continue
 
             try:
@@ -2312,6 +2423,9 @@ class TradeProcessor:
                 inst_details = {}
 
             normalized_expiry = self._normalized_expiry_date(parsed, inst_details)
+            normalized_strike = self._normalized_option_strike(parsed, inst_details)
+            if normalized_strike is None:
+                continue
             if normalized_expiry != expiry_date:
                 continue
 
@@ -2319,7 +2433,7 @@ class TradeProcessor:
                 parsed.base_symbol,
                 normalized_expiry,
                 parsed.option_type,
-                parsed.strike,
+                normalized_strike,
             )
             if key:
                 token_map[key] = order.instrument_token
@@ -2539,6 +2653,7 @@ class TradeProcessor:
         )
 
         expiry_date = self._normalized_expiry_date(parsed, inst_details)
+        option_strike = self._normalized_option_strike(parsed, inst_details)
 
         # Determine instrument type based on exchange and parsed instrument type
         is_index = self._is_index_symbol(parsed.base_symbol)
@@ -2576,10 +2691,14 @@ class TradeProcessor:
                 fees = self.upstox.calculate_brokerage(
                     instrument_token, total_qty,
                     'BUY' if direction == 'Long' else 'SELL',
-                    avg_price
+                    avg_price,
+                    product=position_orders[0].product,
                 )
             else:
-                fees = 25.0 * len(position_orders)  # Fallback estimate
+                raise RuntimeError(
+                    f"Cannot calculate accurate entry fees for {trading_symbol}: "
+                    "missing instrument token"
+                )
 
             # Create open position entry
             display_qty = self._display_quantity(total_qty, exchange, parsed, inst_details)
@@ -2605,7 +2724,7 @@ class TradeProcessor:
                 status='Open',
                 expiry_date=expiry_date,
                 option_type=parsed.option_type,
-                option_strike=parsed.strike,
+                option_strike=option_strike,
                 entry_source_ids=[self._source_id_for_order(order) for order in position_orders],
             )
             self._ensure_trade_journal_key(trade_entry)
@@ -2631,9 +2750,13 @@ class TradeProcessor:
                     order.quantity,
                     order.transaction_type,
                     order.average_price,
+                    product=order.product,
                 )
             else:
-                total_fees = 25.0
+                raise RuntimeError(
+                    f"Cannot calculate accurate fees for {order.trading_symbol}: "
+                    "missing instrument token"
+                )
             order_fees_per_unit[order.order_id] = total_fees / order.quantity if order.quantity else 0.0
 
         open_direction: Optional[str] = None
@@ -2693,7 +2816,6 @@ class TradeProcessor:
                     entry_price=round(entry['price'], 2),
                     exit_price=round(order.average_price, 2),
                     stop_loss=stop_loss,
-                    target=round(order.average_price, 2),
                     quantity=display_match_qty,
                     instrument_type=instrument_type,
                     lot_size=display_lot_size,
@@ -2705,7 +2827,7 @@ class TradeProcessor:
                     status='Closed',
                     expiry_date=expiry_date,
                     option_type=parsed.option_type,
-                    option_strike=parsed.strike,
+                    option_strike=option_strike,
                     entry_source_ids=[entry['trade_id']],
                     exit_source_ids=[self._source_id_for_order(order)],
                 )
@@ -2762,7 +2884,7 @@ class TradeProcessor:
                 status='Open',
                 expiry_date=expiry_date,
                 option_type=parsed.option_type,
-                option_strike=parsed.strike,
+                option_strike=option_strike,
                 entry_source_ids=[entry['trade_id']],
             )
             self._ensure_trade_journal_key(open_entry)
@@ -2779,6 +2901,11 @@ class TradeProcessor:
         results = []
 
         for i, trade in enumerate(trade_entries):
+            if trade.quantity and trade.fees <= 0:
+                raise RuntimeError(
+                    f"Refusing to journal {trade.symbol}: fees must be populated "
+                    "with actual broker charges before Notion is updated"
+                )
             self._ensure_trade_journal_key(trade)
             # Generate label (include account name if not primary BALA account)
             trade_date_str = trade.entry_date.strftime('%b %d')

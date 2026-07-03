@@ -5,6 +5,7 @@ This app group handles:
 - historical recovery using the correct Upstox historical-trades path
 - broker XLSX fallback backfill
 - stable journal dedupe keys
+- weekly broker-vs-Notion reconciliation
 - Upstox token refresh utilities
 
 ## Main entry points
@@ -13,6 +14,7 @@ This app group handles:
 - `broker_trade_backfill.py`
 - `upstox_token_refresh.py`
 - `journal_keys.py`
+- `weekly_journal_reconciliation.py`
 
 ## Install dependencies
 
@@ -44,6 +46,8 @@ python3.11 apps/journaling/broker_trade_backfill.py \
   --date YYYY-MM-DD
 
 ./.venv/bin/python apps/journaling/upstox_token_refresh.py --account ALL
+
+./.venv/bin/python apps/journaling/weekly_journal_reconciliation.py --week-ending YYYY-MM-DD
 ```
 
 ## Configuration
@@ -97,4 +101,22 @@ python3.11 apps/journaling/broker_trade_backfill.py \
 - broker XLSX backfill is the fallback path when the same-day run was missed
 - broker XLSX backfill preserves the broker-file trade times and uses Upstox for fee lookup
 - if the Upstox token is stale during historical recovery or fee lookup, the shared client will attempt one automatic refresh via the repo `.venv` token-refresh script and retry
+- every closed trade must have broker charges populated in `Fees`; `Net P&L` is the Notion formula `P&L - Fees`, so missing or placeholder fees make the journal unreliable
+- manual journal patches must calculate fees from the actual Upstox order/trade payloads before updating Notion; do not leave `Fees` blank or `0` unless the row is explicitly marked as a manual exception
 - older deep-reference notes were preserved in `TOOLS_README_SOURCE.md`
+
+## Weekly reconciliation
+
+The weekly reconciliation script is read-only. It fetches broker fills from
+Upstox, fetches Notion rows for the same week, and verifies that broker source
+IDs are represented in the journal's stable `Journal Key` property.
+
+Outputs are stored under:
+
+```text
+/Users/rugan/balas-product-os/Projects/trading-system/reconciliation/weekly/
+```
+
+A clean report means every broker fill for the week was represented in Notion
+by source ID. Missing fills are printed in an explanation-required section so
+they can be reviewed before the weekly review is considered complete.
