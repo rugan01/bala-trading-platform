@@ -8,6 +8,7 @@ Current implementation:
 - accepts private Telegram bot commands from whitelisted user IDs
 - requires double confirmation before `Close All Positions`
 - auto-refreshes stale Upstox tokens once on `401`
+- stores read-only account cash / margin / P&L snapshots through `account_oversight_snapshot.py`
 
 ## Environment
 
@@ -37,6 +38,18 @@ Read-only status check:
 
 ```bash
 ./.venv/bin/python apps/risk/mtm_guard.py --account BALA --once
+```
+
+Read-only daily account snapshot for both broker accounts:
+
+```bash
+./.venv/bin/python apps/risk/account_oversight_snapshot.py --account ALL
+```
+
+Send the same snapshot to Telegram:
+
+```bash
+./.venv/bin/python apps/risk/account_oversight_snapshot.py --account ALL --send-telegram
 ```
 
 Print recent Telegram identity values for control bootstrap:
@@ -94,6 +107,10 @@ Notes:
 State is stored under:
 
 `data/runtime/risk/mtm_guard_<account>.json`
+
+Account balance / P&L snapshots are stored under:
+
+`data/runtime/risk/account_snapshots/`
 
 The file keeps:
 - today’s configured profit target / loss limit

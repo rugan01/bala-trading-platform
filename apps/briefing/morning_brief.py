@@ -37,6 +37,11 @@ from dotenv import load_dotenv
 try:
     from trading_platform.archive.bootstrap import DEFAULT_DB_PATH
     from trading_platform.briefs import BriefPredictionRecord, BriefRunRecord, archive_brief_run
+    from trading_platform.briefs.market_event_risk import (
+        format_msci_summary_lines,
+        get_msci_event_flags,
+        get_passive_flow_day_notes,
+    )
     from trading_platform.briefs.repository import summarize_recent_learning
     from trading_platform.paths import ENV_FILE as PLATFORM_ENV_FILE, PREMARKET_REPORTS_ROOT
     PLATFORM_ARCHIVE_AVAILABLE = True
@@ -45,10 +50,20 @@ except Exception:
     BriefPredictionRecord = None
     BriefRunRecord = None
     archive_brief_run = None
+    format_msci_summary_lines = None
+    get_msci_event_flags = None
+    get_passive_flow_day_notes = None
     summarize_recent_learning = None
     PLATFORM_ENV_FILE = REPO_ROOT / '.env'
     PREMARKET_REPORTS_ROOT = REPO_ROOT / 'data' / 'reports' / 'premarket'
     PLATFORM_ARCHIVE_AVAILABLE = False
+
+try:
+    from trading_platform.risk.daily_plan import create_daily_trade_plan_files
+    DAILY_PLAN_AUTOFILL_AVAILABLE = True
+except Exception:
+    create_daily_trade_plan_files = None
+    DAILY_PLAN_AUTOFILL_AVAILABLE = False
 
 # Configure logging
 LOG_FILE = os.path.expanduser('~/Library/Logs/morning_brief.log')
@@ -808,6 +823,8 @@ def build_quick_summary_lines(
     nifty_result: SectionResult,
     fno_result: SectionResult,
     mcx_result: SectionResult,
+    *,
+    target_date: date | None = None,
 ) -> list[str]:
     summary_lines: list[str] = []
 
@@ -854,6 +871,9 @@ def build_quick_summary_lines(
             if bearish:
                 summary_lines.append('  MCX WEAK NAMES: ' + ', '.join(bearish[:4]))
 
+    if format_msci_summary_lines is not None:
+        summary_lines.extend(format_msci_summary_lines(target_date or date.today()))
+
     return summary_lines
 
 
@@ -872,7 +892,13 @@ def consolidate_reports(
 
     sections.append(create_section_header('QUICK SUMMARY'))
     sections.append('')
-    summary_lines = build_quick_summary_lines(global_result, nifty_result, fno_result, mcx_result)
+    summary_lines = build_quick_summary_lines(
+        global_result,
+        nifty_result,
+        fno_result,
+        mcx_result,
+        target_date=now.date(),
+    )
     sections.append('\n'.join(summary_lines) if summary_lines else '  Run individual sections for summary')
 
     sections.append(create_section_header('LEARNING LOOP (Recent Feedback)'))
@@ -1185,9 +1211,54 @@ def main():
     latest_text_path.write_text(full_report, encoding='utf-8')
     logger.info('Report saved to: %s', text_path)
 
-    summary_lines = build_quick_summary_lines(global_result, nifty_result, fno_result, mcx_result)
+    summary_lines = build_quick_summary_lines(
+        global_result,
+        nifty_result,
+        fno_result,
+        mcx_result,
+        target_date=started_at.date(),
+    )
     predictions = build_brief_predictions(global_result, nifty_result, fno_result, mcx_result)
     run_id = f"morning_brief_{started_at.strftime('%Y%m%d_%H%M%S')}"
+    event_risk_payload = (
+        get_msci_event_flags(started_at.date(), lookahead_days=5)
+        if get_msci_event_flags is not None
+        else {"today": [], "upcoming": []}
+    )
+    passive_flow_notes = (
+        get_passive_flow_day_notes(started_at.date())
+        if get_passive_flow_day_notes is not None
+        else []
+    )
+
+    daily_plan_result: dict[str, Any] = {
+        'enabled': DAILY_PLAN_AUTOFILL_AVAILABLE,
+    }
+    if DAILY_PLAN_AUTOFILL_AVAILABLE and create_daily_trade_plan_files is not None:
+        try:
+            plan_result = create_daily_trade_plan_files(
+                plan_date=started_at.date(),
+                accounts=('BALA', 'NIMMY'),
+                source='morning_brief.py',
+                force_markdown=False,
+                morning_brief_payload={
+                    'brief_run_id': run_id,
+                    'generated_at': started_at.isoformat(),
+                    'market_phase': infer_market_phase(started_at),
+                    'quick_summary_lines': summary_lines,
+                    'event_risk': event_risk_payload,
+                    'passive_flow_notes': passive_flow_notes,
+                },
+            )
+            daily_plan_result = plan_result.as_dict()
+            daily_plan_result['enabled'] = True
+            logger.info('Daily trading plan ready: %s', plan_result.markdown_plan_path)
+        except Exception as exc:
+            logger.warning('Daily trading plan autofill failed: %s', exc)
+            daily_plan_result = {
+                'enabled': True,
+                'error': str(exc),
+            }
 
     structured_payload = {
         'brief_run_id': run_id,
@@ -1206,6 +1277,10 @@ def main():
             'mcx': _serialize_section_result(mcx_result),
         },
         'predictions': [asdict(prediction) for prediction in predictions],
+        'event_risk': event_risk_payload,
+        'passive_flow_notes': passive_flow_notes,
+        'planning_hints': daily_plan_result.get('planning_hints'),
+        'daily_plan': daily_plan_result,
     }
 
     archive_enabled = PLATFORM_ARCHIVE_AVAILABLE and not args.no_archive
