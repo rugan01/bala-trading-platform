@@ -18,6 +18,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass
@@ -39,9 +40,21 @@ from mtm_guard import (
     load_telegram_token,
     now_local,
     parse_hhmm,
+    positions_net_pnl,
     summarize_positions,
     today_local,
 )
+
+try:
+    from trading_platform.risk.daily_plan import (
+        load_runtime_plan,
+        symbol_matches_expiry_underlying,
+        update_runtime_plan_state,
+    )
+except Exception:
+    load_runtime_plan = None
+    symbol_matches_expiry_underlying = None
+    update_runtime_plan_state = None
 
 LOG_FILE = os.path.expanduser("~/Library/Logs/trading_day_watch.log")
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
@@ -130,6 +143,22 @@ class WatchStateStore:
             "stock_statuses": {},
             "net_loss_alert_sent": False,
             "single_position_alerts": [],
+            "missing_plan_alert_sent": False,
+            "expiry_pilot": {
+                "open_symbols": [],
+                "entry_count": 0,
+                "reentry_count": 0,
+                "seen_open_before": False,
+                "alerts_sent": [],
+            },
+            "plan_activity": {
+                "open_keys": [],
+                "root_stats": {},
+                "idea_counts": {"FO": 0, "COM": 0, "EQ": 0, "TOTAL": 0},
+                "afternoon_fno_entries": 0,
+                "morning_fno_profit_anchor": None,
+                "alerts_sent": [],
+            },
             "last_terminal_summary": None,
             "last_alert_at": None,
         }
@@ -283,6 +312,545 @@ class TradingDayWatch:
         token = symbol.upper()
         return any(token in position.symbol.upper() for position in snapshot.positions)
 
+    def _load_plan_context(self) -> dict[str, Any]:
+        if load_runtime_plan is None:
+            return {}
+        try:
+            return load_runtime_plan(self.account, runtime_root=Path(self.args.state_dir), plan_date=today_local())
+        except Exception as exc:
+            logger.warning("[%s] Failed to load runtime daily plan: %s", self.account, exc)
+            return {}
+
+    @staticmethod
+    def _parse_plan_time(value: str | None) -> dtime | None:
+        if not value:
+            return None
+        try:
+            return parse_hhmm(str(value))
+        except Exception:
+            return None
+
+    def _expiry_positions(self, mtm_snapshot: MTMSnapshot, plan_context: dict[str, Any]) -> list[Any]:
+        expiry_pilot = plan_context.get("expiry_pilot") or {}
+        underlying = expiry_pilot.get("underlying")
+        if not expiry_pilot.get("enabled") or not underlying or symbol_matches_expiry_underlying is None:
+            return []
+        return [
+            position
+            for position in mtm_snapshot.positions
+            if symbol_matches_expiry_underlying(position.symbol, str(underlying))
+        ]
+
+    def _save_runtime_freeze(self, reason: str) -> None:
+        if update_runtime_plan_state is None:
+            return
+        try:
+            update_runtime_plan_state(
+                self.account,
+                {
+                    "frozen_for_new_trades": True,
+                    "freeze_reason": reason,
+                    "hard_stop_reached": True,
+                },
+                runtime_root=Path(self.args.state_dir),
+                plan_date=today_local(),
+            )
+        except Exception as exc:
+            logger.warning("[%s] Failed to update runtime plan freeze state: %s", self.account, exc)
+
+    @staticmethod
+    def _root_for_symbol(symbol: str) -> str:
+        normalized = "".join(ch for ch in str(symbol or "").upper() if ch.isalnum())
+        for root in ("BANKNIFTY", "NIFTY", "SENSEX", "BSX", "SILVERMIC", "SILVERM", "GOLDM", "GOLD", "CRUDEOILM", "CRUDEOIL", "NATGASMINI", "NATGAS", "ZINCMINI", "ZINC"):
+            if normalized.startswith(root):
+                if root in {"NIFTY", "BANKNIFTY", "SENSEX", "BSX"}:
+                    return "INDEX"
+                return root
+        match = re.match(r"([A-Z]+)", normalized)
+        return match.group(1) if match else normalized or "UNKNOWN"
+
+    @staticmethod
+    def _segment_for_position(position: Any) -> str:
+        exchange = str(getattr(position, "exchange", "") or "").upper()
+        symbol = str(getattr(position, "symbol", "") or "").upper()
+        if "MCX" in exchange or any(symbol.startswith(root) for root in ("SILVER", "GOLD", "CRUDE", "NATGAS", "ZINC")):
+            return "COM"
+        if any(token in symbol for token in ("NIFTY", "SENSEX", "BSX", "BANKNIFTY")):
+            return "FO"
+        if "FO" in exchange and re.search(r"(CE|PE)$", symbol):
+            return "STOCK_OPTIONS"
+        if "FO" in exchange:
+            return "FO"
+        return "EQ"
+
+    def _position_root_stats(self, positions: list[Any]) -> dict[str, dict[str, Any]]:
+        stats: dict[str, dict[str, Any]] = {}
+        for position in positions:
+            segment = self._segment_for_position(position)
+            root = self._root_for_symbol(getattr(position, "symbol", ""))
+            key = f"{segment}:{root}"
+            row = stats.setdefault(
+                key,
+                {
+                    "segment": segment,
+                    "root": root,
+                    "symbols": [],
+                    "abs_qty": 0,
+                    "pnl": 0.0,
+                },
+            )
+            row["symbols"].append(position.symbol)
+            row["abs_qty"] += abs(int(position.quantity or 0))
+            row["pnl"] += float(position.pnl or 0.0)
+        return stats
+
+    def _planned_roots(self, plan_context: dict[str, Any]) -> set[str]:
+        roots: set[str] = set()
+        for idea in plan_context.get("ideas") or []:
+            symbol = str(idea.get("symbol") or "").strip()
+            if symbol:
+                roots.add(self._root_for_symbol(symbol))
+        return roots
+
+    def _save_activity_runtime_state(self, activity: dict[str, Any]) -> None:
+        if update_runtime_plan_state is None:
+            return
+        try:
+            update_runtime_plan_state(
+                self.account,
+                {
+                    "idea_counts": activity.get("idea_counts"),
+                    "afternoon_fno_entries": activity.get("afternoon_fno_entries"),
+                    "morning_fno_profit_anchor": activity.get("morning_fno_profit_anchor"),
+                },
+                runtime_root=Path(self.args.state_dir),
+                plan_date=today_local(),
+            )
+        except Exception as exc:
+            logger.warning("[%s] Failed to update runtime plan activity state: %s", self.account, exc)
+
+    @staticmethod
+    def _format_plan_context(plan_context: dict[str, Any]) -> list[str]:
+        if not plan_context:
+            return [
+                "Plan: MISSING runtime daily plan. Run morning brief or create_daily_trading_plan.py --runtime-json.",
+            ]
+        banned = ", ".join(plan_context.get("banned_segments") or []) or "-"
+        lines = [
+            (
+                f"Plan: Tier1 {plan_context.get('tier1_segment', '-')} | "
+                f"Tier2 {plan_context.get('tier2_segment') or '-'} | "
+                f"Banned {banned}"
+            ),
+            (
+                f"Limits: F&O {plan_context.get('max_equity_index_ideas', 2)} ideas | "
+                f"StockOpt {plan_context.get('max_positional_stock_option_campaigns', 2)} active | "
+                f"COM {plan_context.get('max_commodity_ideas', 2)} ideas | "
+                f"Total {plan_context.get('max_total_ideas', 4)} | "
+                f"Hard stop {format_money(float(plan_context.get('hard_daily_stop') or 0))}"
+            ),
+        ]
+        expiry_pilot = plan_context.get("expiry_pilot") or {}
+        if expiry_pilot.get("enabled"):
+            lines.append(
+                (
+                    f"Expiry Pilot: {expiry_pilot.get('underlying', '-')} | "
+                    f"pilot stop {format_money(float(expiry_pilot.get('session_hard_stop') or 0))} | "
+                    f"close {expiry_pilot.get('hard_close_time', '-')}"
+                )
+            )
+        return lines
+
+    def _expiry_pilot_alerts(self, mtm_snapshot: MTMSnapshot, plan_context: dict[str, Any]) -> list[str]:
+        expiry_pilot = plan_context.get("expiry_pilot") or {}
+        if not expiry_pilot.get("enabled"):
+            return []
+
+        positions = self._expiry_positions(mtm_snapshot, plan_context)
+        current_symbols = sorted(position.symbol for position in positions)
+        pilot_state = self.state.setdefault("expiry_pilot", {})
+        previous_symbols = sorted(pilot_state.get("open_symbols") or [])
+        previous_set = set(previous_symbols)
+        current_set = set(current_symbols)
+        new_symbols = sorted(current_set - previous_set)
+        closed_symbols = sorted(previous_set - current_set)
+        alerts_sent = set(pilot_state.get("alerts_sent") or [])
+        alerts: list[str] = []
+
+        now = now_local()
+        now_time = now.time()
+        no_new_after = self._parse_plan_time(expiry_pilot.get("no_new_entries_after"))
+        hard_close_time = self._parse_plan_time(expiry_pilot.get("hard_close_time"))
+        underlying = expiry_pilot.get("underlying") or "EXPIRY"
+
+        if current_symbols and not previous_symbols:
+            if pilot_state.get("seen_open_before"):
+                pilot_state["reentry_count"] = int(pilot_state.get("reentry_count") or 0) + 1
+                event_label = "re-entry"
+            else:
+                pilot_state["entry_count"] = int(pilot_state.get("entry_count") or 0) + 1
+                pilot_state["seen_open_before"] = True
+                event_label = "entry"
+            alerts.append(
+                "\n".join(
+                    [
+                        f"*{self.account} Trading Watch*",
+                        f"Expiry pilot {event_label} detected: `{underlying}`",
+                        f"Open expiry symbols: `{', '.join(current_symbols)}`",
+                        f"Entries: `{pilot_state.get('entry_count', 0)}` / `{expiry_pilot.get('max_new_entries')}` | "
+                        f"Re-entries: `{pilot_state.get('reentry_count', 0)}` / `{expiry_pilot.get('max_reentries')}`",
+                    ]
+                )
+            )
+        elif current_symbols and new_symbols:
+            key = f"expiry_new_leg:{','.join(new_symbols)}"
+            if key not in alerts_sent:
+                alerts.append(
+                    "\n".join(
+                        [
+                            f"*{self.account} Trading Watch*",
+                            f"New expiry leg/adjustment detected in `{underlying}`",
+                            f"New symbol(s): `{', '.join(new_symbols)}`",
+                            "Confirm this is a hedge/risk reduction, not averaging into the losing side.",
+                        ]
+                    )
+                )
+                alerts_sent.add(key)
+
+        if closed_symbols and not current_symbols:
+            pilot_state["last_flat_at"] = now.isoformat()
+
+        if no_new_after and new_symbols and now_time >= no_new_after:
+            key = "expiry_after_cutoff"
+            if key not in alerts_sent:
+                alerts.append(
+                    "\n".join(
+                        [
+                            f"*{self.account} Trading Watch*",
+                            f"Expiry entry after cutoff detected: `{underlying}`",
+                            f"Cutoff: `{expiry_pilot.get('no_new_entries_after')}` | Time: `{now.strftime('%H:%M:%S')}`",
+                            "Rule: no new expiry entries after cutoff. Reduce/exit mode only.",
+                        ]
+                    )
+                )
+                alerts_sent.add(key)
+
+        max_entries = int(expiry_pilot.get("max_new_entries") or 0)
+        if max_entries and int(pilot_state.get("entry_count") or 0) > max_entries:
+            key = "expiry_entry_limit"
+            if key not in alerts_sent:
+                alerts.append(
+                    "\n".join(
+                        [
+                            f"*{self.account} Trading Watch*",
+                            "Expiry entry limit breached.",
+                            f"Entries: `{pilot_state.get('entry_count')}` / `{max_entries}`",
+                            "No more expiry entries today.",
+                        ]
+                    )
+                )
+                alerts_sent.add(key)
+
+        max_reentries = int(expiry_pilot.get("max_reentries") or 0)
+        if max_reentries and int(pilot_state.get("reentry_count") or 0) > max_reentries:
+            key = "expiry_reentry_limit"
+            if key not in alerts_sent:
+                alerts.append(
+                    "\n".join(
+                        [
+                            f"*{self.account} Trading Watch*",
+                            "Expiry re-entry limit breached.",
+                            f"Re-entries: `{pilot_state.get('reentry_count')}` / `{max_reentries}`",
+                            "This is now recovery-trade territory. Stop new expiry trades.",
+                        ]
+                    )
+                )
+                alerts_sent.add(key)
+
+        session_stop = abs(float(expiry_pilot.get("session_hard_stop") or 0))
+        expiry_net_pnl = positions_net_pnl(positions)
+        if session_stop and current_symbols and expiry_net_pnl <= -session_stop:
+            key = "expiry_hard_stop"
+            if key not in alerts_sent:
+                alerts.append(
+                    "\n".join(
+                        [
+                            f"*{self.account} Trading Watch*",
+                            f"Expiry pilot hard stop reached: `{format_money(mtm_snapshot.net_pnl)}`",
+                            f"Pilot stop: `-{session_stop:,.2f}`",
+                            "Close all expiry positions now. No re-entry.",
+                            summarize_positions(mtm_snapshot),
+                        ]
+                    )
+                )
+                alerts_sent.add(key)
+                pilot_state["hard_stop_reached"] = True
+                self._save_runtime_freeze("expiry_pilot_hard_stop")
+
+        if hard_close_time and current_symbols and now_time >= hard_close_time:
+            key = "expiry_hard_close_time"
+            if key not in alerts_sent:
+                alerts.append(
+                    "\n".join(
+                        [
+                            f"*{self.account} Trading Watch*",
+                            f"Expiry hard-close time reached: `{expiry_pilot.get('hard_close_time')}`",
+                            f"Open expiry symbols: `{', '.join(current_symbols)}`",
+                            "Rule: close expiry positions. No gamma gambling after hard-close time.",
+                        ]
+                    )
+                )
+                alerts_sent.add(key)
+
+        pilot_state["open_symbols"] = current_symbols
+        pilot_state["alerts_sent"] = sorted(alerts_sent)
+        self.state["expiry_pilot"] = pilot_state
+        return alerts
+
+    def _plan_activity_alerts(self, mtm_snapshot: MTMSnapshot, plan_context: dict[str, Any]) -> list[str]:
+        if not plan_context:
+            return []
+
+        activity = self.state.setdefault("plan_activity", {})
+        previous_keys = set(activity.get("open_keys") or [])
+        previous_stats = activity.get("root_stats") or {}
+        current_stats = self._position_root_stats(mtm_snapshot.positions)
+        current_keys = set(current_stats)
+        new_keys = sorted(current_keys - previous_keys)
+        closed_keys = sorted(previous_keys - current_keys)
+        alerts_sent = set(activity.get("alerts_sent") or [])
+        idea_counts = dict(activity.get("idea_counts") or {"FO": 0, "STOCK_OPTIONS": 0, "COM": 0, "EQ": 0, "TOTAL": 0})
+        for key in ("FO", "STOCK_OPTIONS", "COM", "EQ", "TOTAL"):
+            idea_counts.setdefault(key, 0)
+
+        alerts: list[str] = []
+        banned_segments = set(plan_context.get("banned_segments") or [])
+        planned_roots = self._planned_roots(plan_context)
+        now = now_local()
+        now_time = now.time()
+
+        for key in new_keys:
+            info = current_stats[key]
+            segment = info["segment"]
+            root = info["root"]
+            idea_counts[segment] = int(idea_counts.get(segment, 0)) + 1
+            if segment != "STOCK_OPTIONS":
+                idea_counts["TOTAL"] = int(idea_counts.get("TOTAL", 0)) + 1
+
+            if segment == "FO" and now_time >= dtime(12, 0):
+                activity["afternoon_fno_entries"] = int(activity.get("afternoon_fno_entries") or 0) + 1
+
+            if segment in banned_segments:
+                alert_key = f"banned_segment:{key}"
+                if alert_key not in alerts_sent:
+                    alerts.append(
+                        "\n".join(
+                            [
+                                f"*{self.account} Trading Watch*",
+                                f"Banned segment trade detected: `{segment}`",
+                                f"Root: `{root}` | Symbols: `{', '.join(info['symbols'])}`",
+                                f"Today banned segments: `{', '.join(sorted(banned_segments))}`",
+                            ]
+                        )
+                    )
+                    alerts_sent.add(alert_key)
+
+            if planned_roots and root not in planned_roots and key not in planned_roots:
+                alert_key = f"unplanned:{key}"
+                if alert_key not in alerts_sent:
+                    alerts.append(
+                        "\n".join(
+                            [
+                                f"*{self.account} Trading Watch*",
+                                f"Unplanned position cluster detected: `{key}`",
+                                f"Symbols: `{', '.join(info['symbols'])}`",
+                                "This was not declared in the runtime plan. Confirm it is not an impulse/recovery trade.",
+                            ]
+                        )
+                    )
+                    alerts_sent.add(alert_key)
+            elif not planned_roots:
+                alert_key = f"blank_plan:{key}"
+                if alert_key not in alerts_sent:
+                    alerts.append(
+                        "\n".join(
+                            [
+                                f"*{self.account} Trading Watch*",
+                                f"Position opened while runtime plan ideas are blank: `{key}`",
+                                f"Symbols: `{', '.join(info['symbols'])}`",
+                                "Fill the runtime/markdown plan before taking more trades.",
+                            ]
+                        )
+                    )
+                    alerts_sent.add(alert_key)
+
+        max_fno = int(plan_context.get("max_equity_index_ideas") or 2)
+        max_stock_options = int(plan_context.get("max_positional_stock_option_campaigns") or 2)
+        max_com = int(plan_context.get("max_commodity_ideas") or 2)
+        max_total = int(plan_context.get("max_total_ideas") or 4)
+        limit_checks = [
+            ("FO", max_fno),
+            ("STOCK_OPTIONS", max_stock_options),
+            ("COM", max_com),
+            ("TOTAL", max_total),
+        ]
+        for bucket, limit in limit_checks:
+            if limit and int(idea_counts.get(bucket, 0)) > limit:
+                alert_key = f"idea_limit:{bucket}"
+                if alert_key not in alerts_sent:
+                    alerts.append(
+                        "\n".join(
+                            [
+                                f"*{self.account} Trading Watch*",
+                                f"{bucket} idea limit breached.",
+                                f"Count: `{idea_counts.get(bucket)}` / `{limit}`",
+                                "No new trades in this bucket. Reduce-or-exit mode only.",
+                            ]
+                        )
+                    )
+                    alerts_sent.add(alert_key)
+
+        for key, info in current_stats.items():
+            previous = previous_stats.get(key) or {}
+            prev_qty = abs(int(previous.get("abs_qty") or 0))
+            prev_pnl = float(previous.get("pnl") or 0.0)
+            current_qty = abs(int(info.get("abs_qty") or 0))
+            if prev_qty > 0 and current_qty != prev_qty and info.get("segment") == "STOCK_OPTIONS":
+                stock_policy = plan_context.get("stock_options_policy") or {}
+                earliest_review_time = self._parse_plan_time(stock_policy.get("earliest_normal_review_time") or "11:00")
+                if earliest_review_time and now_time < earliest_review_time:
+                    alert_key = f"stock_option_early_change:{key}:{prev_qty}->{current_qty}"
+                    if alert_key not in alerts_sent:
+                        alerts.append(
+                            "\n".join(
+                                [
+                                    f"*{self.account} Trading Watch*",
+                                    f"Stock-option early close/adjustment detected: `{key}`",
+                                    f"Previous qty `{prev_qty}`; current qty `{current_qty}`.",
+                                    f"Rule: no normal stock-option decisions before `{stock_policy.get('earliest_normal_review_time') or '11:00'}`.",
+                                    "Because this is a defined-risk campaign, wait for the 2-hour close unless this is a documented emergency.",
+                                ]
+                            )
+                        )
+                        alerts_sent.add(alert_key)
+                else:
+                    alert_key = f"stock_option_confirmation:{key}:{prev_qty}->{current_qty}"
+                    if alert_key not in alerts_sent:
+                        alerts.append(
+                            "\n".join(
+                                [
+                                    f"*{self.account} Trading Watch*",
+                                    f"Stock-option structure changed: `{key}`",
+                                    f"Previous qty `{prev_qty}`; current qty `{current_qty}`.",
+                                    "Confirm the underlying gave a 2-hour candle close beyond the predefined invalidation level.",
+                                    "Do not convert defined risk into open-ended risk.",
+                                ]
+                            )
+                        )
+                        alerts_sent.add(alert_key)
+            if prev_qty > 0 and current_qty > prev_qty and prev_pnl < 0:
+                if info.get("segment") == "STOCK_OPTIONS":
+                    alert_key = f"stock_option_structure_changed:{key}:{current_qty}"
+                    if alert_key not in alerts_sent:
+                        alerts.append(
+                            "\n".join(
+                                [
+                                    f"*{self.account} Trading Watch*",
+                                    f"Stock-option structure changed: `{key}`",
+                                    f"Previous qty `{prev_qty}` with P&L `{format_money(prev_pnl)}`; current qty `{current_qty}`.",
+                                    "Confirm this completed a planned spread/hedge and did not add naked directional risk.",
+                                ]
+                            )
+                        )
+                        alerts_sent.add(alert_key)
+                    continue
+                alert_key = f"possible_averaging:{key}:{current_qty}"
+                if alert_key not in alerts_sent:
+                    alerts.append(
+                        "\n".join(
+                            [
+                                f"*{self.account} Trading Watch*",
+                                f"Possible averaging detected: `{key}`",
+                                f"Previous qty `{prev_qty}` with P&L `{format_money(prev_pnl)}`; current qty `{current_qty}`.",
+                                "If this is not a hedge that reduces risk, close the rescue add immediately.",
+                            ]
+                        )
+                    )
+                    alerts_sent.add(alert_key)
+
+        if closed_keys:
+            activity["last_closed_keys"] = closed_keys
+            activity["last_closed_at"] = now.isoformat()
+            stock_policy = plan_context.get("stock_options_policy") or {}
+            earliest_review_time = self._parse_plan_time(stock_policy.get("earliest_normal_review_time") or "11:00")
+            for key in closed_keys:
+                previous = previous_stats.get(key) or {}
+                if previous.get("segment") != "STOCK_OPTIONS":
+                    continue
+                if earliest_review_time and now_time < earliest_review_time:
+                    alert_key = f"stock_option_early_close:{key}"
+                    if alert_key not in alerts_sent:
+                        alerts.append(
+                            "\n".join(
+                                [
+                                    f"*{self.account} Trading Watch*",
+                                    f"Stock-option campaign closed before `{stock_policy.get('earliest_normal_review_time') or '11:00'}`: `{key}`",
+                                    "Rule: no opening-volatility close/adjustment for defined-risk stock-option campaigns.",
+                                    "If this was not an emergency, document it as a process violation.",
+                                ]
+                            )
+                        )
+                        alerts_sent.add(alert_key)
+
+        if plan_context.get("morning_profit_lock_enabled"):
+            anchor = activity.get("morning_fno_profit_anchor")
+            if anchor is None and now_time >= dtime(11, 59):
+                anchor_value = float(mtm_snapshot.net_pnl)
+                if anchor_value > 0:
+                    activity["morning_fno_profit_anchor"] = anchor_value
+                    anchor = anchor_value
+            if anchor is not None and now_time >= dtime(12, 0):
+                allowed_giveback = min(float(anchor) * 0.25, float(plan_context.get("max_afternoon_fno_giveback") or 1500))
+                giveback = float(anchor) - float(mtm_snapshot.net_pnl)
+                if giveback >= allowed_giveback:
+                    alert_key = "morning_profit_giveback_lock"
+                    if alert_key not in alerts_sent:
+                        alerts.append(
+                            "\n".join(
+                                [
+                                    f"*{self.account} Trading Watch*",
+                                    "Morning-profit giveback lock triggered.",
+                                    f"Morning anchor: `{format_money(float(anchor))}`",
+                                    f"Current MTM: `{format_money(mtm_snapshot.net_pnl)}`",
+                                    f"Allowed giveback: `{format_money(allowed_giveback)}`",
+                                    "Stop new F&O trades. Protect the green morning.",
+                                ]
+                            )
+                        )
+                        alerts_sent.add(alert_key)
+                if int(activity.get("afternoon_fno_entries") or 0) > 1:
+                    alert_key = "afternoon_fno_entry_limit"
+                    if alert_key not in alerts_sent:
+                        alerts.append(
+                            "\n".join(
+                                [
+                                    f"*{self.account} Trading Watch*",
+                                    "Afternoon F&O entry limit breached after morning-profit lock.",
+                                    f"Afternoon F&O entries: `{activity.get('afternoon_fno_entries')}` / `1`",
+                                    "No more F&O entries today.",
+                                ]
+                            )
+                        )
+                        alerts_sent.add(alert_key)
+
+        activity["open_keys"] = sorted(current_keys)
+        activity["root_stats"] = current_stats
+        activity["idea_counts"] = idea_counts
+        activity["alerts_sent"] = sorted(alerts_sent)
+        self.state["plan_activity"] = activity
+        self._save_activity_runtime_state(activity)
+        return alerts
+
     def _build_terminal_summary(
         self,
         global_bias: str,
@@ -290,6 +858,7 @@ class TradingDayWatch:
         bullish_checks: list[ThesisCheck],
         bearish_checks: list[ThesisCheck],
         mtm_snapshot: MTMSnapshot,
+        plan_context: dict[str, Any],
     ) -> str:
         lines = [
             "",
@@ -297,6 +866,7 @@ class TradingDayWatch:
             f"TRADING DAY WATCH | {now_local().strftime('%Y-%m-%d %H:%M:%S IST')}",
             "=" * 90,
             f"Global Bias: {global_bias}",
+            *self._format_plan_context(plan_context),
             "",
             "Indices:",
         ]
@@ -342,13 +912,19 @@ class TradingDayWatch:
             return False
         return any(check.thesis_status not in {"no_comparison", "unknown"} for check in index_checks)
 
-    def _build_unavailable_summary(self, global_bias: str, mtm_snapshot: MTMSnapshot) -> str:
+    def _build_unavailable_summary(
+        self,
+        global_bias: str,
+        mtm_snapshot: MTMSnapshot,
+        plan_context: dict[str, Any],
+    ) -> str:
         lines = [
             "",
             "=" * 90,
             f"TRADING DAY WATCH | {now_local().strftime('%Y-%m-%d %H:%M:%S IST')}",
             "=" * 90,
             f"Global Bias: {global_bias}",
+            *self._format_plan_context(plan_context),
             "",
             "Market structure temporarily unavailable from live-analysis payload.",
             "Skipping thesis-change alerts for this cycle and preserving the last meaningful market state.",
@@ -410,22 +986,38 @@ class TradingDayWatch:
         bullish_checks: list[ThesisCheck],
         bearish_checks: list[ThesisCheck],
         mtm_snapshot: MTMSnapshot,
+        plan_context: dict[str, Any],
     ) -> list[str]:
         alerts: list[str] = []
 
-        if mtm_snapshot.net_pnl <= -abs(self.args.net_loss_alert) and not self.state.get("net_loss_alert_sent"):
+        if not plan_context and not self.state.get("missing_plan_alert_sent"):
+            alerts.append(
+                "\n".join(
+                    [
+                        f"*{self.account} Trading Watch*",
+                        "Runtime daily plan missing.",
+                        "Run `morning_brief.py` or `create_daily_trading_plan.py --runtime-json` so plan-aware guardrails can work.",
+                    ]
+                )
+            )
+            self.state["missing_plan_alert_sent"] = True
+        elif plan_context:
+            self.state["missing_plan_alert_sent"] = False
+
+        net_loss_threshold = abs(float(plan_context.get("hard_daily_stop") or self.args.net_loss_alert))
+        if mtm_snapshot.net_pnl <= -net_loss_threshold and not self.state.get("net_loss_alert_sent"):
             alerts.append(
                 "\n".join(
                     [
                         f"*{self.account} Trading Watch*",
                         f"Net MTM alert: `{format_money(mtm_snapshot.net_pnl)}`",
-                        f"Threshold breached: `-{abs(self.args.net_loss_alert):,.2f}`",
+                        f"Threshold breached: `-{net_loss_threshold:,.2f}`",
                         summarize_positions(mtm_snapshot),
                     ]
                 )
             )
             self.state["net_loss_alert_sent"] = True
-        elif mtm_snapshot.net_pnl > -abs(self.args.net_loss_alert):
+        elif mtm_snapshot.net_pnl > -net_loss_threshold:
             self.state["net_loss_alert_sent"] = False
 
         sent_single = set(self.state.get("single_position_alerts", []))
@@ -445,6 +1037,9 @@ class TradingDayWatch:
                         )
                     )
         self.state["single_position_alerts"] = sorted(current_single)
+
+        alerts.extend(self._plan_activity_alerts(mtm_snapshot, plan_context))
+        alerts.extend(self._expiry_pilot_alerts(mtm_snapshot, plan_context))
 
         if mtm_snapshot.open_positions > 0:
             for check in index_checks:
@@ -504,18 +1099,22 @@ class TradingDayWatch:
 
     def cycle(self) -> None:
         morning_payload, live_payload = self._get_analysis_payloads()
+        plan_context = self._load_plan_context()
         mtm_snapshot = self.upstox.build_snapshot()
 
         global_bias = self._extract_global_bias(morning_payload)
         index_checks, bullish_checks, bearish_checks = self._parse_checks(live_payload, self.args.top_per_side)
 
         if not self._has_meaningful_checks(index_checks, bullish_checks, bearish_checks):
-            summary = self._build_unavailable_summary(global_bias, mtm_snapshot)
+            summary = self._build_unavailable_summary(global_bias, mtm_snapshot, plan_context)
             logger.warning(
                 "[%s] Live analysis payload did not contain meaningful structured checks; preserving prior thesis state.",
                 self.account,
             )
             print(summary, flush=True)
+            alerts = self._market_alerts([], [], [], mtm_snapshot, plan_context)
+            for alert in alerts:
+                self._send_alert(alert)
             self.state["last_terminal_summary"] = summary
             self.state_store.save(self.state)
             return
@@ -526,10 +1125,11 @@ class TradingDayWatch:
             bullish_checks,
             bearish_checks,
             mtm_snapshot,
+            plan_context,
         )
         print(summary, flush=True)
 
-        alerts = self._market_alerts(index_checks, bullish_checks, bearish_checks, mtm_snapshot)
+        alerts = self._market_alerts(index_checks, bullish_checks, bearish_checks, mtm_snapshot, plan_context)
         for alert in alerts:
             self._send_alert(alert)
 
@@ -543,7 +1143,8 @@ class TradingDayWatch:
                         f"NIFTY/BANKNIFTY/SENSEX: " + " | ".join(
                             f"{check.symbol} `{check.thesis_status}`" for check in index_checks
                         ),
-                        f"Net MTM: `{format_money(mtm_snapshot.net_pnl)}`",
+                            f"Expiry pilot MTM: `{format_money(expiry_net_pnl)}`",
+                            f"Account net MTM: `{format_money(mtm_snapshot.net_pnl)}`",
                         summarize_positions(mtm_snapshot),
                     ]
                 ),

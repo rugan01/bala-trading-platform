@@ -44,10 +44,23 @@ except Exception:
     ENV_FILE = REPO_ROOT / ".env"
     RISK_RUNTIME_ROOT = REPO_ROOT / "data" / "runtime" / "risk"
 
+try:
+    from trading_platform.risk.daily_plan import (
+        load_runtime_plan,
+        symbol_matches_expiry_underlying,
+        update_runtime_plan_state,
+    )
+except Exception:
+    load_runtime_plan = None
+    symbol_matches_expiry_underlying = None
+    update_runtime_plan_state = None
+
 SUPPORTED_ACCOUNTS = ("BALA", "NIMMY")
 POSITIONS_URL = "https://api.upstox.com/v2/portfolio/short-term-positions"
 EXIT_ALL_POSITIONS_URL = "https://api.upstox.com/v2/order/positions/exit"
+FUNDS_MARGIN_V3_URL = "https://api.upstox.com/v3/user/get-funds-and-margin"
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
+CONFIRMATION_TTL_SECONDS = 300
 LOG_FILE = os.path.expanduser("~/Library/Logs/mtm_guard.log")
 
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
@@ -95,6 +108,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--loss-limit", type=float, default=None, help="Initial MTM loss limit for the day.")
     parser.add_argument("--market-open-time", default="09:00")
     parser.add_argument("--market-close-time", default="23:30")
+    parser.add_argument("--commodity-close-warning-minutes", type=int, default=30, help="Warn if commodity positions remain open this many minutes before close.")
     parser.add_argument("--dry-run-close", action="store_true", help="Do not call Upstox exit-all; just simulate it.")
     parser.add_argument("--disable-telegram-send", action="store_true", help="Log Telegram messages locally instead of sending them.")
     parser.add_argument(
@@ -245,12 +259,16 @@ class UpstoxRiskClient:
         *,
         params: Optional[dict[str, Any]] = None,
         payload: Optional[dict[str, Any]] = None,
+        extra_headers: Optional[dict[str, str]] = None,
         timeout: int = 30,
     ) -> requests.Response:
+        headers = dict(self.headers)
+        if extra_headers:
+            headers.update(extra_headers)
         response = requests.request(
             method,
             url,
-            headers=self.headers,
+            headers=headers,
             params=params,
             json=payload,
             timeout=timeout,
@@ -262,10 +280,13 @@ class UpstoxRiskClient:
         ):
             self._refresh_attempted = True
             self._refresh_access_token()
+            headers = dict(self.headers)
+            if extra_headers:
+                headers.update(extra_headers)
             response = requests.request(
                 method,
                 url,
-                headers=self.headers,
+                headers=headers,
                 params=params,
                 json=payload,
                 timeout=timeout,
@@ -279,6 +300,18 @@ class UpstoxRiskClient:
         if payload.get("status") != "success":
             raise RuntimeError(f"Upstox positions returned non-success payload: {payload}")
         return payload.get("data", [])
+
+    def get_funds_and_margin(self) -> dict[str, Any]:
+        response = self._request(
+            "GET",
+            FUNDS_MARGIN_V3_URL,
+            extra_headers={"Api-Version": "3.0"},
+            timeout=20,
+        )
+        payload = response.json()
+        if payload.get("status") != "success":
+            raise RuntimeError(f"Upstox funds/margin returned non-success payload: {payload}")
+        return payload.get("data", {})
 
     def build_snapshot(self) -> MTMSnapshot:
         rows = self.get_positions()
@@ -429,6 +462,9 @@ def default_state(account: str, session_date: date) -> dict[str, Any]:
         "last_heartbeat_at": None,
         "pending_confirmations": {},
         "threshold_alerts_sent": [],
+        "frozen_for_new_trades": False,
+        "freeze_reason": None,
+        "hard_stop_reached": False,
     }
 
 
@@ -482,12 +518,15 @@ def build_status_message(state: dict[str, Any], snapshot: MTMSnapshot, *, source
         f"Loss `{format_money(-abs(state['loss_limit'])) if state.get('loss_limit') is not None else '-'}`"
     )
     pause_text = "paused" if state.get("paused") else "running"
+    freeze_text = "frozen" if state.get("frozen_for_new_trades") else "not frozen"
     return "\n".join(
         [
             f"*{snapshot.account} MTM Guard*",
             f"Source: `{source}`",
             f"Time: `{datetime.fromisoformat(snapshot.captured_at).strftime('%Y-%m-%d %H:%M:%S IST')}`",
             f"Service: `{pause_text}`",
+            f"New-trade state: `{freeze_text}`",
+            f"Freeze reason: `{state.get('freeze_reason') or '-'}`",
             "",
             f"Net MTM: `{format_money(snapshot.net_pnl)}`",
             f"Realised: `{format_money(snapshot.realised_pnl)}`",
@@ -525,6 +564,7 @@ def build_service_event_message(
         f"Event: `{event}`",
         f"Time: `{now_local().strftime('%Y-%m-%d %H:%M:%S IST')}`",
         f"Service: `{'paused' if state.get('paused') else 'running'}`",
+        f"New-trade state: `{'frozen' if state.get('frozen_for_new_trades') else 'not frozen'}`",
         f"Profit target: `{format_money(state.get('profit_target'))}`",
         f"Loss limit: `{format_money(-abs(state['loss_limit'])) if state.get('loss_limit') is not None else '-'}`",
     ]
@@ -596,6 +636,31 @@ def make_status_markup(account: str, paused: bool) -> dict[str, Any]:
     }
 
 
+def parse_plan_hhmm(value: Optional[str]) -> Optional[dtime]:
+    if not value:
+        return None
+    try:
+        return parse_hhmm(str(value))
+    except Exception:
+        return None
+
+
+def minutes_until_time(target: dtime, current: Optional[datetime] = None) -> float:
+    current_dt = current or now_local()
+    target_dt = current_dt.replace(hour=target.hour, minute=target.minute, second=0, microsecond=0)
+    return (target_dt - current_dt).total_seconds() / 60
+
+
+def is_commodity_position(position: PositionSnapshot) -> bool:
+    exchange = position.exchange.upper()
+    symbol = position.symbol.upper()
+    return "MCX" in exchange or any(symbol.startswith(root) for root in ("SILVER", "GOLD", "CRUDE", "NATGAS", "ZINC"))
+
+
+def positions_net_pnl(positions: list[PositionSnapshot]) -> float:
+    return sum(float(position.pnl) for position in positions)
+
+
 def user_and_chat_allowed(
     *,
     chat_id: int,
@@ -610,6 +675,25 @@ def user_and_chat_allowed(
     if allowed_chat_ids and chat_id not in allowed_chat_ids:
         return False
     return True
+
+
+def pending_confirmation_expired(
+    pending: dict[str, Any],
+    *,
+    current: Optional[datetime] = None,
+    ttl_seconds: int = CONFIRMATION_TTL_SECONDS,
+) -> bool:
+    created_at = pending.get("created_at")
+    if not created_at:
+        return True
+    try:
+        created = datetime.fromisoformat(str(created_at))
+    except (TypeError, ValueError):
+        return True
+    now = current or now_local()
+    if created.tzinfo is None and now.tzinfo is not None:
+        created = created.replace(tzinfo=now.tzinfo)
+    return (now - created).total_seconds() > ttl_seconds
 
 
 def parse_account_token(token: Optional[str], default_account: str) -> str:
@@ -695,6 +779,7 @@ class MTMGuardService:
             account=self.account,
             dry_run_close=args.dry_run_close,
         )
+        self._sync_plan_defaults()
         if not self.allowed_user_ids:
             logger.warning(
                 "[%s] Telegram control commands are disabled until TELEGRAM_ALLOWED_USER_IDS is configured.",
@@ -712,6 +797,59 @@ class MTMGuardService:
         self.allowed_chat_ids = parse_csv_ints(env_value(values, "TELEGRAM_CONTROL_CHAT_IDS"))
         if self.allowed_chat_ids:
             self.control_chat_fallback = next(iter(self.allowed_chat_ids), None)
+
+    def _load_plan_context(self) -> dict[str, Any]:
+        if load_runtime_plan is None:
+            return {}
+        try:
+            return load_runtime_plan(self.account, runtime_root=Path(self.args.state_dir), plan_date=today_local())
+        except Exception as exc:
+            logger.warning("[%s] Failed to load runtime daily plan: %s", self.account, exc)
+            return {}
+
+    def _sync_plan_defaults(self) -> None:
+        plan_context = self._load_plan_context()
+        if not plan_context:
+            return
+        changed = False
+        if self.state.get("loss_limit") is None and plan_context.get("hard_daily_stop") is not None:
+            self.state["loss_limit"] = abs(float(plan_context["hard_daily_stop"]))
+            self.state["loss_limit_source"] = "runtime_daily_plan"
+            changed = True
+        if changed:
+            self.state_store.save(self.state)
+
+    def _expiry_positions(self, snapshot: MTMSnapshot, plan_context: dict[str, Any]) -> list[PositionSnapshot]:
+        expiry_pilot = plan_context.get("expiry_pilot") or {}
+        underlying = expiry_pilot.get("underlying")
+        if not expiry_pilot.get("enabled") or not underlying or symbol_matches_expiry_underlying is None:
+            return []
+        return [
+            position
+            for position in snapshot.positions
+            if symbol_matches_expiry_underlying(position.symbol, str(underlying))
+        ]
+
+    def _freeze_for_new_trades(self, reason: str) -> None:
+        self.state["frozen_for_new_trades"] = True
+        self.state["freeze_reason"] = reason
+        self.state["hard_stop_reached"] = True
+        self.state_store.save(self.state)
+        if update_runtime_plan_state is None:
+            return
+        try:
+            update_runtime_plan_state(
+                self.account,
+                {
+                    "frozen_for_new_trades": True,
+                    "freeze_reason": reason,
+                    "hard_stop_reached": True,
+                },
+                runtime_root=Path(self.args.state_dir),
+                plan_date=today_local(),
+            )
+        except Exception as exc:
+            logger.warning("[%s] Failed to update runtime plan freeze state: %s", self.account, exc)
 
     def _send_help(self, chat_id: int) -> None:
         message = "\n".join(
@@ -906,8 +1044,27 @@ class MTMGuardService:
             if not pending:
                 self.telegram.answer_callback_query(callback_id, "This confirmation is no longer active.")
                 return
+            if pending_confirmation_expired(pending):
+                self.state["pending_confirmations"].pop(token, None)
+                self.state_store.save(self.state)
+                self.telegram.edit_message_reply_markup(
+                    chat_id,
+                    int(message["message_id"]),
+                    reply_markup={"inline_keyboard": []},
+                )
+                self.telegram.answer_callback_query(
+                    callback_id,
+                    "This confirmation expired. Start the request again.",
+                )
+                return
             if int(pending.get("user_id")) != user_id:
                 self.telegram.answer_callback_query(callback_id, "Only the requesting user can confirm this action.")
+                return
+            if int(pending.get("chat_id")) != chat_id:
+                self.telegram.answer_callback_query(
+                    callback_id,
+                    "Confirm this action in the chat where it was requested.",
+                )
                 return
 
             self.telegram.edit_message_reply_markup(chat_id, int(message["message_id"]), reply_markup={"inline_keyboard": []})
@@ -1011,6 +1168,9 @@ class MTMGuardService:
         sent = set(self.state.get("threshold_alerts_sent", []))
         new_keys: list[str] = []
         messages: list[str] = []
+        plan_context = self._load_plan_context()
+        expiry_pilot = plan_context.get("expiry_pilot") or {}
+        expiry_positions = self._expiry_positions(snapshot, plan_context)
 
         loss_limit = self.state.get("loss_limit")
         if loss_limit is not None and snapshot.net_pnl <= -abs(float(loss_limit)):
@@ -1022,6 +1182,80 @@ class MTMGuardService:
                     f"Net MTM: `{format_money(snapshot.net_pnl)}`\n"
                     f"Configured loss limit: `-₹{abs(float(loss_limit)):,.2f}`"
                 )
+
+        if expiry_pilot.get("enabled") and expiry_positions:
+            underlying = expiry_pilot.get("underlying") or "EXPIRY"
+            session_stop = abs(float(expiry_pilot.get("session_hard_stop") or 0))
+            expiry_net_pnl = positions_net_pnl(expiry_positions)
+            if session_stop and expiry_net_pnl <= -session_stop:
+                key = "expiry_pilot_hard_stop_hit"
+                if key not in sent:
+                    new_keys.append(key)
+                    self._freeze_for_new_trades("expiry_pilot_hard_stop")
+                    messages.append(
+                        "\n".join(
+                            [
+                                f"*{self.account} EXPIRY PILOT HARD STOP*",
+                                f"Underlying: `{underlying}`",
+                                f"Expiry pilot MTM: `{format_money(expiry_net_pnl)}`",
+                                f"Account net MTM: `{format_money(snapshot.net_pnl)}`",
+                                f"Pilot session stop: `-₹{session_stop:,.2f}`",
+                                "",
+                                "Action required: use *Close All* confirmation now.",
+                                "New trades are frozen for this account for the rest of the session.",
+                                "",
+                                "Positions:",
+                                summarize_positions(snapshot),
+                            ]
+                        )
+                    )
+
+            hard_close_time = parse_plan_hhmm(expiry_pilot.get("hard_close_time"))
+            if hard_close_time and now_local().time() >= hard_close_time:
+                key = "expiry_hard_close_time"
+                if key not in sent:
+                    new_keys.append(key)
+                    messages.append(
+                        "\n".join(
+                            [
+                                f"*{self.account} Expiry Hard-Close Time*",
+                                f"Underlying: `{underlying}`",
+                                f"Hard close time: `{expiry_pilot.get('hard_close_time')}`",
+                                "",
+                                "Expiry positions are still open. Close them now; no gamma gambling after hard-close time.",
+                                "",
+                                "Positions:",
+                                summarize_positions(snapshot),
+                            ]
+                        )
+                    )
+
+        commodity_positions = [position for position in snapshot.positions if is_commodity_position(position)]
+        if commodity_positions:
+            minutes_to_close = minutes_until_time(self.close_time)
+            if minutes_to_close <= float(self.args.commodity_close_warning_minutes):
+                key = "commodity_near_close_open_positions"
+                if key not in sent:
+                    new_keys.append(key)
+                    self._freeze_for_new_trades("commodity_near_close_open_positions")
+                    position_lines = "\n".join(
+                        f"- `{position.symbol}` | qty `{position.quantity}` | P&L `{format_plain_money(position.pnl)}`"
+                        for position in commodity_positions[:6]
+                    )
+                    messages.append(
+                        "\n".join(
+                            [
+                                f"*{self.account} Commodity Near-Close Alert*",
+                                f"Minutes to configured close: `{minutes_to_close:.1f}`",
+                                "Rule: no unplanned overnight commodity futures.",
+                                "",
+                                "Action required: close or explicitly hedge/reduce. New trades are frozen.",
+                                "",
+                                "Commodity positions:",
+                                position_lines,
+                            ]
+                        )
+                    )
 
         profit_target = self.state.get("profit_target")
         if profit_target is not None and snapshot.net_pnl >= float(profit_target):
@@ -1098,6 +1332,7 @@ def main() -> None:
 
     if args.once:
         snapshot = service.upstox.build_snapshot()
+        service._evaluate_thresholds(snapshot)
         print(build_status_message(service.state, snapshot, source="once"))
         return
 
