@@ -9,6 +9,19 @@ Current focus:
 - live-analysis storage
 - shared repo path helpers
 
+## Install dependencies
+
+```bash
+cd /path/to/bala-trading-platform
+./.venv/bin/python -m pip install -r packages/trading_platform/requirements.txt
+```
+
+Run the offline package tests with:
+
+```bash
+PYTHONPATH=packages/trading_platform/src ./.venv/bin/python -m unittest discover -s packages/trading_platform/tests -v
+```
+
 ## Package layout
 
 ```text
@@ -34,4 +47,3 @@ PYTHONPATH=packages/trading_platform/src python3.11 -m trading_platform.cli init
 ## Historical note
 
 The older design/context snapshot is preserved in `README_SOURCE.md`.
-
