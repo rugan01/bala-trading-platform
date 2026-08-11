@@ -28,8 +28,10 @@ from scipy.optimize import brentq
 from scipy.stats import norm
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-BASE_DIR    = Path("/Users/rugan/balas-product-os")
-OUT_ROOT    = BASE_DIR / "Projects/trading-system/vol-surface"
+# Repo-relative, matching the other briefing apps. Was hardcoded to the
+# workspace checkout, which read a different .env from the rest of the brief.
+BASE_DIR    = Path(__file__).resolve().parents[2]
+OUT_ROOT    = BASE_DIR / "data" / "reports" / "vol-surface"
 TODAY_STR   = date.today().isoformat()
 CHART_DIR   = OUT_ROOT / "charts" / TODAY_STR
 LOG_DIR     = OUT_ROOT / "inference-log" / TODAY_STR[:7]
@@ -43,10 +45,18 @@ for d in [CHART_DIR, LOG_DIR]:
 BASE_URL = "https://api.upstox.com/v2"
 
 def load_token() -> str:
-    env = (BASE_DIR / ".env").read_text()
-    m = re.search(r"UPSTOX_BALA_ACCESS_TOKEN='([^']+)'", env)
+    """Read the Upstox token from the repo .env.
+
+    Accepts single-quoted, double-quoted or bare values - the token refresher
+    and hand edits do not agree on quoting, and a quote mismatch previously
+    surfaced as an opaque 401 rather than a missing-token error.
+    """
+    env_path = BASE_DIR / ".env"
+    if not env_path.exists():
+        sys.exit(f"No .env at {env_path}")
+    m = re.search(r"""UPSTOX_BALA_ACCESS_TOKEN=['"]?([^'"\s]+)['"]?""", env_path.read_text())
     if not m:
-        sys.exit("Token not found in .env")
+        sys.exit(f"UPSTOX_BALA_ACCESS_TOKEN not found in {env_path}")
     return m.group(1)
 
 TOKEN   = load_token()
