@@ -58,6 +58,25 @@ class TradeJournalingParsingTests(unittest.TestCase):
         self.assertEqual(parsed.strike, 215000.0)
         self.assertEqual(parsed.instrument_type, "PE")
 
+    def test_day_first_wins_when_monthly_year_is_not_current(self):
+        """LTM25AUG264800CE is day 25 / AUG / year 26 / strike 4800.
+
+        The monthly reading (year 25, strike 264800) also matches, and its strike
+        begins with the day-first year digits, so the same-year tie-break would
+        fire on a tolerance. It must not: the monthly year here is 25, not the
+        current year, so the day-first reading is correct. Guards the inversion
+        introduced when the tie-break used +/-1 slack instead of exact equality.
+        """
+        parsed = self.client.parse_trading_symbol("LTM25AUG264800CE")
+        self.assertEqual(parsed.base_symbol, "LTM")
+        self.assertEqual(parsed.strike, 4800.0)
+        self.assertEqual(parsed.expiry_date, date(2026, 8, 25))
+
+    def test_compact_monthly_equity_option_symbol(self):
+        parsed = self.client.parse_trading_symbol("LTM26AUG4800CE")
+        self.assertEqual(parsed.strike, 4800.0)
+        self.assertEqual(parsed.instrument_type, "CE")
+
     def test_historical_day_first_mcx_symbol_does_not_regress(self):
         """The day-first form must still win where the monthly year is implausible."""
         parsed = self.client.parse_trading_symbol("CRUDEOILM16APR268700PE")
@@ -65,6 +84,59 @@ class TradeJournalingParsingTests(unittest.TestCase):
         self.assertEqual(parsed.strike, 8700.0)
         self.assertEqual(parsed.expiry_date, date(2026, 4, 16))
 
+
+
+class InstrumentMasterMatchTests(unittest.TestCase):
+    """Derivatives must resolve against the master's structured fields.
+
+    The master writes derivatives spaced out ("LTM 4800 CE 25 AUG 26"), which
+    parse_trading_symbol cannot read, so matching by re-parsing that display
+    string never succeeded. Every historical NSE/BSE option then fell through to
+    the loose match, which deliberately withholds instrument_key for
+    derivatives, and fee calculation failed hard on any past-date run.
+    """
+
+    def setUp(self):
+        self.client = UpstoxClient.__new__(UpstoxClient)
+
+    def row(self, **over):
+        base = {
+            "trading_symbol": "LTM 4800 CE 25 AUG 26",
+            "instrument_key": "NSE_FO|119520",
+            "asset_symbol": "LTM",
+            "strike_price": 4800.0,
+            "instrument_type": "CE",
+            "expiry": 1787682599000,
+            "lot_size": 150,
+        }
+        base.update(over)
+        return base
+
+    def parsed(self):
+        return self.client.parse_trading_symbol("LTM25AUG264800CE")
+
+    def test_expiry_epoch_converts_in_ist(self):
+        self.assertEqual(self.client._master_expiry_date(1787682599000), date(2026, 8, 25))
+
+    def test_bad_expiry_values_do_not_raise(self):
+        for bad in (None, "", "not-a-number"):
+            self.assertIsNone(self.client._master_expiry_date(bad))
+
+    def test_matches_the_right_contract(self):
+        self.assertTrue(self.client._master_row_matches(self.row(), self.parsed()))
+
+    def test_rejects_wrong_strike_expiry_type_and_underlying(self):
+        p = self.parsed()
+        self.assertFalse(self.client._master_row_matches(self.row(strike_price=4900.0), p))
+        self.assertFalse(self.client._master_row_matches(self.row(expiry=1793125799000), p))
+        self.assertFalse(self.client._master_row_matches(self.row(instrument_type="PE"), p))
+        self.assertFalse(self.client._master_row_matches(self.row(asset_symbol="LT"), p))
+
+    def test_falls_back_to_underlying_symbol_when_asset_symbol_absent(self):
+        row = self.row()
+        del row["asset_symbol"]
+        row["underlying_symbol"] = "LTM"
+        self.assertTrue(self.client._master_row_matches(row, self.parsed()))
 
 if __name__ == "__main__":
     unittest.main()
