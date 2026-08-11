@@ -939,6 +939,19 @@ class UpstoxClient:
         if abs(day_first_year_short - current_year_short) > 1 and abs(monthly_year_short - current_year_short) <= 1:
             return False
 
+        # Both years plausible. This happens when the STRIKE itself begins with
+        # the year digits, so the day-first regex swallows them and returns a
+        # truncated strike: SILVERM26AUG265000CE parsed as day=26/AUG/year=26 +
+        # strike 5000 instead of the real 265000, because "265000" starts "26".
+        # Live Upstox symbols for current-day journaling use the monthly form;
+        # the day-first form comes from historical reconstruction, where the day
+        # almost never equals the year and the check above already resolves it.
+        # So when the years tie, the monthly reading is the safe one.
+        years_tie = (abs(day_first_year_short - current_year_short) <= 1
+                     and abs(monthly_year_short - current_year_short) <= 1)
+        if years_tie and monthly_strike_text.startswith(f"{day_first_year_short:02d}"):
+            return False
+
         return True
 
     def _parse_expiry_date(self, date_str: str) -> Optional[date]:

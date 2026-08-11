@@ -40,5 +40,31 @@ class TradeJournalingParsingTests(unittest.TestCase):
         self.assertEqual(processor._normalized_option_strike(parsed, details), 24100.0)
 
 
+    def test_mcx_strike_beginning_with_year_digits_is_not_truncated(self):
+        """SILVERM26AUG265000CE must parse as strike 265000, not 5000.
+
+        The day-first regex also matches this symbol, reading "26" as a year and
+        leaving "5000" as the strike. Both year readings are plausible (26), so
+        the existing year-distance check cannot separate them. Journalled as
+        strike 5000 on 2026-08-10 before this was fixed.
+        """
+        parsed = self.client.parse_trading_symbol("SILVERM26AUG265000CE")
+        self.assertEqual(parsed.base_symbol, "SILVERM")
+        self.assertEqual(parsed.strike, 265000.0)
+        self.assertEqual(parsed.instrument_type, "CE")
+
+    def test_mcx_strike_not_beginning_with_year_digits_still_parses(self):
+        parsed = self.client.parse_trading_symbol("SILVERM26AUG215000PE")
+        self.assertEqual(parsed.strike, 215000.0)
+        self.assertEqual(parsed.instrument_type, "PE")
+
+    def test_historical_day_first_mcx_symbol_does_not_regress(self):
+        """The day-first form must still win where the monthly year is implausible."""
+        parsed = self.client.parse_trading_symbol("CRUDEOILM16APR268700PE")
+        self.assertEqual(parsed.base_symbol, "CRUDEOILM")
+        self.assertEqual(parsed.strike, 8700.0)
+        self.assertEqual(parsed.expiry_date, date(2026, 4, 16))
+
+
 if __name__ == "__main__":
     unittest.main()
