@@ -412,7 +412,16 @@ def reconcile_from_fills(window_lo=(16, 55), window_hi=(17, 35)) -> dict[str, di
 
     ist = timezone(timedelta(hours=5, minutes=30))
     lo, hi = dtime(*window_lo), dtime(*window_hi)
-    client = DeltaRESTClient(DeltaSettings.load(DELTA_ROOT / ".env"))
+    # Settings.load defaults DELTA_ENV to testnet. Every trade in this journal is
+    # a production trade, and a testnet client answers happily with an empty or
+    # unrelated fill list - which would look like "no fills found" rather than
+    # like an error. Pin it, then assert what we actually got.
+    os.environ.setdefault("DELTA_ENV", "production")
+    settings = DeltaSettings.load(DELTA_ROOT / ".env")
+    if settings.environment != "production":
+        raise SystemExit(f"refusing to reconcile production fees against "
+                         f"DELTA_ENV={settings.environment}")
+    client = DeltaRESTClient(settings)
     fills = client.fills(page_size=500)
 
     agg: dict[tuple[str, str], dict] = defaultdict(
@@ -487,6 +496,11 @@ def main() -> int:
         for row in rows:
             props = row["properties"]
             day = (props["Trade Date"]["date"] or {}).get("start")
+            # --date is a filter here, not a fetch key: the fills pull is one
+            # call for the whole account either way. Without this the flag was
+            # silently ignored and every row got rewritten.
+            if args.date and day != args.date:
+                continue
             r = recon.get(day)
             if not r:
                 logger.warning("%s: no authenticated fills found, leaving as-is", day)
