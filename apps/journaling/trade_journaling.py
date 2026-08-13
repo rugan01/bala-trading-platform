@@ -22,7 +22,7 @@ import logging
 import gzip
 import io
 import subprocess
-from datetime import datetime, date, time, timezone
+from datetime import datetime, date, time, timedelta, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -569,6 +569,40 @@ class UpstoxClient:
             return str(value)
         return str(int(numeric)) if numeric.is_integer() else str(numeric)
 
+    @staticmethod
+    def _master_expiry_date(raw) -> Optional[date]:
+        """Instruments-master expiry -> IST calendar date.
+
+        Upstox publishes expiry as epoch milliseconds at end of the expiry day
+        in IST, so convert in IST rather than UTC or the machine's local zone.
+        """
+        if raw in (None, ''):
+            return None
+        try:
+            ms = int(raw)
+        except (TypeError, ValueError):
+            return None
+        ist = timezone(timedelta(hours=5, minutes=30))
+        return datetime.fromtimestamp(ms / 1000, tz=ist).date()
+
+    def _master_row_matches(self, inst: dict, parsed: 'ParsedInstrument') -> bool:
+        """Does this instruments-master row describe the parsed contract?"""
+        if (inst.get('instrument_type') or '') != parsed.instrument_type:
+            return False
+        asset = (inst.get('asset_symbol') or inst.get('underlying_symbol') or '').upper()
+        if asset != (parsed.base_symbol or '').upper():
+            return False
+        if parsed.strike is not None:
+            try:
+                if float(inst.get('strike_price') or 0) != float(parsed.strike):
+                    return False
+            except (TypeError, ValueError):
+                return False
+        if parsed.expiry_date is not None:
+            if self._master_expiry_date(inst.get('expiry')) != parsed.expiry_date:
+                return False
+        return True
+
     def get_instrument_details(
         self,
         trading_symbol: str,
@@ -636,18 +670,22 @@ class UpstoxClient:
                         return result
 
             # Structured derivative match for reconstructed historical symbols.
+            #
+            # Match on the master's OWN structured fields rather than re-parsing
+            # its display symbol. The master writes derivatives spaced out, e.g.
+            # "LTM 4800 CE 25 AUG 26", which parse_trading_symbol cannot read -
+            # it returns base "LTM " and no strike, so this branch could never
+            # match and every historical NSE/BSE option fell through to the loose
+            # match, which deliberately returns no instrument_key for derivatives.
+            # The result was a hard failure in fee calculation for any past-date
+            # journal run. asset_symbol/strike_price/instrument_type/expiry are
+            # authoritative and need no parsing.
             if parsed.instrument_type in ('FUT', 'CE', 'PE'):
                 for inst in instruments:
-                    inst_symbol = inst.get('trading_symbol')
-                    if not inst_symbol:
+                    if not self._master_row_matches(inst, parsed):
                         continue
-                    inst_parsed = self.parse_trading_symbol(inst_symbol)
-                    if (
-                        inst_parsed.base_symbol == parsed.base_symbol and
-                        inst_parsed.instrument_type == parsed.instrument_type and
-                        inst_parsed.expiry_date == parsed.expiry_date and
-                        inst_parsed.strike == parsed.strike
-                    ):
+                    inst_symbol = inst.get('trading_symbol')
+                    if True:
                         result = {
                             'trading_symbol': inst_symbol,
                             'instrument_key': inst.get('instrument_key'),
@@ -937,6 +975,24 @@ class UpstoxClient:
         # If the day-first "year" is far from the current contract year while
         # the monthly year looks current, prefer the monthly interpretation.
         if abs(day_first_year_short - current_year_short) > 1 and abs(monthly_year_short - current_year_short) <= 1:
+            return False
+
+        # Both readings give the CURRENT year, so year distance cannot separate
+        # them. That happens when the strike itself begins with the year digits
+        # and the day-first regex swallows them:
+        #   SILVERM26AUG265000CE -> day 26 / AUG / year 26 / strike 5000
+        #                           vs year 26 / AUG / strike 265000  <- correct
+        # Only the monthly reading keeps the full strike, so prefer it.
+        #
+        # The equality must be EXACT, not a tolerance. With +/-1 slack this also
+        # caught symbols whose monthly year is merely adjacent, and inverted them:
+        #   LTM25AUG264800CE -> day 25 / AUG / year 26 / strike 4800   <- correct
+        #                       vs year 25 / AUG / strike 264800
+        # There the monthly year (25) is not the current year, so the day-first
+        # reading is the right one and this branch must not fire.
+        years_both_current = (day_first_year_short == current_year_short
+                              and monthly_year_short == current_year_short)
+        if years_both_current and monthly_strike_text.startswith(f"{day_first_year_short:02d}"):
             return False
 
         return True

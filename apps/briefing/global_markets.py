@@ -53,6 +53,8 @@ class MarketData:
     status: str             # BULLISH, BEARISH, NEUTRAL
     market_status: str      # OPEN, CLOSED, PRE-MARKET
     timestamp: Optional[str] = None
+    drawdown_5d_pct: float = 0.0   # Move from the 5-day high to the prior close (<=0)
+    unstable: bool = False         # True when today's move is a rebound inside a selloff
 
 
 @dataclass
@@ -142,6 +144,15 @@ def fetch_yahoo_quote_detailed(symbol: str, *, quiet: bool = False) -> Optional[
             intraday = 0
             intraday_pct = 0
 
+        # Drawdown into today: how far the PRIOR close sat below the 5-day high.
+        # This is what distinguishes "fresh advance" from "bounce inside a selloff".
+        prior_closes = [c for c in closes[:-1] if c]
+        if prior_closes and prev_close:
+            peak = max(prior_closes)
+            drawdown_5d_pct = ((prev_close - peak) / peak) * 100 if peak else 0.0
+        else:
+            drawdown_5d_pct = 0.0
+
         return {
             'price': current,
             'open': today_open,
@@ -155,6 +166,7 @@ def fetch_yahoo_quote_detailed(symbol: str, *, quiet: bool = False) -> Optional[
             'market_state': market_state,
             'high': highs[-1] if highs and highs[-1] else current,
             'low': lows[-1] if lows and lows[-1] else current,
+            'drawdown_5d_pct': drawdown_5d_pct,
         }
 
     except Exception as e:
@@ -192,6 +204,13 @@ def create_market_data(key: str, symbol: str, name: str, data: dict,
     else:
         market_status = 'CLOSED'
 
+    # A large up-move that only retraces part of a recent selloff is NOT the same
+    # signal as a fresh advance. Flag it so sentiment scoring can discount it.
+    drawdown_5d = data.get('drawdown_5d_pct', 0.0)
+    unstable = drawdown_5d <= -5.0 and data['change_pct'] >= 2.0
+    if unstable:
+        status = 'REBOUND_UNSTABLE'
+
     return MarketData(
         symbol=symbol,
         name=name,
@@ -205,7 +224,9 @@ def create_market_data(key: str, symbol: str, name: str, data: dict,
         intraday=round(data['intraday'], 2),
         intraday_pct=round(data['intraday_pct'], 2),
         status=status,
-        market_status=market_status
+        market_status=market_status,
+        drawdown_5d_pct=round(drawdown_5d, 2),
+        unstable=unstable,
     )
 
 
@@ -410,15 +431,33 @@ def analyze_sentiment(us_futures: dict, asian_markets: dict,
     # Asian Markets Analysis
     asia_bullish = 0
     asia_bearish = 0
+    asia_unstable = []
     for key, market in asian_markets.items():
-        if market.change_pct > 0.5:
+        if market.unstable:
+            # Counts as "up", but it is a bounce inside a drawdown, not a clean advance.
+            asia_unstable.append(market)
+            asia_bullish += 1
+        elif market.change_pct > 0.5:
             asia_bullish += 1
         elif market.change_pct < -0.5:
             asia_bearish += 1
 
-    if asia_bullish >= 3:
+    if asia_unstable:
+        detail = ", ".join(
+            f"{m.name} {m.change_pct:+.1f}% after {m.drawdown_5d_pct:.1f}% drawdown"
+            for m in asia_unstable
+        )
+        bearish_signals.append(f"UNSTABLE: rebound inside a selloff -> {detail}")
+        # A violent retracement is a volatility signal, not a risk-on signal.
+        risk_score -= 1
+
+    if asia_bullish >= 3 and not asia_unstable:
         bullish_signals.append(f"Asia broadly positive ({asia_bullish} markets up)")
         risk_score += 1
+    elif asia_bullish >= 3 and asia_unstable:
+        bullish_signals.append(
+            f"Asia positive ({asia_bullish} up) but {len(asia_unstable)} are unstable rebounds - discounted"
+        )
     elif asia_bearish >= 3:
         bearish_signals.append(f"Asia broadly negative ({asia_bearish} markets down)")
         risk_score -= 1

@@ -886,6 +886,7 @@ def consolidate_reports(
     run_times: Dict[str, float],
     learning_summary: str,
     sections_to_run: list[str],
+    vol_result: Optional[SectionResult] = None,
 ) -> str:
     sections = []
     sections.append(create_header(now))
@@ -910,6 +911,8 @@ def consolidate_reports(
         ('nifty', 'INDEX ANALYSIS (Nifty, BankNifty, Sensex)', nifty_result, 'Index Analysis'),
         ('fno', 'F&O STOCK SCANNER (Bullish & Bearish Picks)', fno_result, 'F&O Scanner'),
         ('mcx', 'MCX COMMODITIES (Broad Structure + Session Setup)', mcx_result, 'MCX Scanner'),
+        ('vol', 'VOL SURFACE + GEOPOLITICAL INFERENCE',
+         vol_result or SectionResult(False, 'Skipped'), 'Vol Surface'),
     ]
 
     stats: Dict[str, Dict[str, Any]] = {}
@@ -1106,6 +1109,72 @@ def send_notification(title: str, message: str, success: bool = True):
 # MAIN
 # =============================================================================
 
+def run_vol_surface(context: str = 'Iran war risk') -> SectionResult:
+    logger.info('Running Vol Surface Monitor...')
+    vol_script = TOOLS_DIR / 'vol_surface_monitor.py'
+    if not vol_script.exists():
+        return SectionResult(False, 'vol_surface_monitor.py not found in Tools/')
+    try:
+        result = subprocess.run(
+            [sys.executable, str(vol_script), '--context', context],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={**os.environ, 'PYTHONPATH': str(TOOLS_DIR)},
+        )
+        output = result.stdout.strip()
+        if result.returncode != 0:
+            err = result.stderr.strip()
+            return SectionResult(False, f'Vol surface failed:\n{err or output}')
+
+        # Parse key numbers out of the captured output for structured data
+        import re as _re
+        score_m   = _re.search(r'Geopolitical Risk Score \[.*?\]: ([\d.]+)/100', output)
+        label_m   = _re.search(r'→\s+(.+)', output)
+        near_iv_m = _re.search(r'near-term IV \(([\d.]+)%\)', output)
+        slope_m   = _re.search(r'Slope \(far.near\): ([+-][\d.]+)pp', output)
+        inv_m     = _re.search(r'(INVERTED TERM STRUCTURE|Normal shape)', output)
+
+        structured = {
+            'geo_risk_score': float(score_m.group(1)) if score_m else None,
+            'risk_label':     label_m.group(1).strip() if label_m else None,
+            'near_iv_pct':    float(near_iv_m.group(1)) if near_iv_m else None,
+            'ts_slope_pp':    float(slope_m.group(1)) if slope_m else None,
+            'ts_inverted':    bool(inv_m and 'INVERTED' in inv_m.group(1)) if inv_m else False,
+            'context':        context,
+        }
+        return SectionResult(True, output, structured)
+
+    except subprocess.TimeoutExpired:
+        return SectionResult(False, 'Vol Surface Monitor timed out (120s)')
+    except Exception as e:
+        logger.error('Vol Surface Monitor failed: %s', e)
+        return SectionResult(False, f'Vol Surface Monitor failed: {e}')
+
+
+# =============================================================================
+# REPORT CONSOLIDATION
+# =============================================================================
+
+
+NSE_OPEN = time(9, 15)
+NSE_CLOSE = time(15, 30)
+
+
+def _resolve_data_mode(requested: str, now: datetime) -> str:
+    """Resolve 'auto' into 'live' or 'eod' based on NSE session state.
+
+    Live data is only meaningful on a weekday between 09:15 and 15:30 IST.
+    Outside that window the option chain and intraday quotes are stale, so we
+    fall back to closed-day history.
+    """
+    if requested in ('live', 'eod'):
+        return requested
+    if now.weekday() >= 5:  # Sat/Sun
+        return 'eod'
+    return 'live' if NSE_OPEN <= now.time() <= NSE_CLOSE else 'eod'
+
+
 def main():
     parser = argparse.ArgumentParser(description='Morning Brief - Unified Pre-Market Analysis')
     parser.add_argument('--output', type=str, default=str(DEFAULT_OUTPUT_DIR), help='Directory to save report')
@@ -1113,23 +1182,30 @@ def main():
     parser.add_argument('--notify', action='store_true', help='Send macOS notification when done')
     parser.add_argument('--parallel', action='store_true', default=True, help='Run sections in parallel (default: true)')
     parser.add_argument('--mode', choices=['manual', 'scheduled', 'replay'], default='manual', help='Run mode for archive tracking')
+    parser.add_argument('--vol-context', type=str, default='Iran war risk',
+                        help='Geopolitical context for vol surface inference')
+    parser.add_argument('--data-mode', choices=['auto', 'live', 'eod'], default='auto',
+                        help='Market data mode: auto (live during NSE hours, else eod), live, or eod')
     parser.add_argument('--no-archive', action='store_true', help='Skip writing structured brief data into the platform archive')
     args = parser.parse_args()
 
     started_at = datetime.now()
+    data_mode = _resolve_data_mode(args.data_mode, started_at)
     logger.info('=' * 60)
     logger.info('Morning Brief Started at %s', started_at)
+    logger.info('Data mode: %s (requested: %s)', data_mode, args.data_mode)
     logger.info('=' * 60)
 
     if args.sections:
         sections_to_run = [s.strip().lower() for s in args.sections.split(',')]
     else:
-        sections_to_run = ['global', 'nifty', 'fno', 'mcx']
+        sections_to_run = ['global', 'nifty', 'fno', 'mcx', 'vol']
 
     global_result = SectionResult(False, 'Skipped')
     nifty_result = SectionResult(False, 'Skipped')
     fno_result = SectionResult(False, 'Skipped')
     mcx_result = SectionResult(False, 'Skipped')
+    vol_result = SectionResult(False, 'Skipped')
     run_times: Dict[str, float] = {}
 
     import time as timer
@@ -1140,11 +1216,13 @@ def main():
             if 'global' in sections_to_run:
                 futures['global'] = (timer.time(), executor.submit(run_global_markets))
             if 'nifty' in sections_to_run:
-                futures['nifty'] = (timer.time(), executor.submit(run_nifty_analysis, mode='eod'))
+                futures['nifty'] = (timer.time(), executor.submit(run_nifty_analysis, mode=data_mode))
             if 'fno' in sections_to_run:
-                futures['fno'] = (timer.time(), executor.submit(run_fno_scanner, mode='eod'))
+                futures['fno'] = (timer.time(), executor.submit(run_fno_scanner, mode=data_mode))
             if 'mcx' in sections_to_run:
                 futures['mcx'] = (timer.time(), executor.submit(run_mcx_scanner))
+            if 'vol' in sections_to_run:
+                futures['vol'] = (timer.time(), executor.submit(run_vol_surface, args.vol_context))
 
             future_map = {future: (name, started) for name, (started, future) in futures.items()}
             for future in as_completed(future_map):
@@ -1160,6 +1238,8 @@ def main():
                         fno_result = result
                     elif name == 'mcx':
                         mcx_result = result
+                    elif name == 'vol':
+                        vol_result = result
                 except TimeoutError:
                     logger.error('%s section timed out', name)
                     run_times[name] = 300
@@ -1173,16 +1253,20 @@ def main():
             run_times['global'] = timer.time() - start
         if 'nifty' in sections_to_run:
             start = timer.time()
-            nifty_result = run_nifty_analysis(mode='eod')
+            nifty_result = run_nifty_analysis(mode=data_mode)
             run_times['nifty'] = timer.time() - start
         if 'fno' in sections_to_run:
             start = timer.time()
-            fno_result = run_fno_scanner(mode='eod')
+            fno_result = run_fno_scanner(mode=data_mode)
             run_times['fno'] = timer.time() - start
         if 'mcx' in sections_to_run:
             start = timer.time()
             mcx_result = run_mcx_scanner()
             run_times['mcx'] = timer.time() - start
+        if 'vol' in sections_to_run:
+            start = timer.time()
+            vol_result = run_vol_surface(args.vol_context)
+            run_times['vol'] = timer.time() - start
 
     learning_summary = _build_learning_summary()
     full_report = consolidate_reports(
@@ -1194,6 +1278,7 @@ def main():
         run_times,
         learning_summary,
         sections_to_run,
+        vol_result=vol_result,
     )
 
     print(full_report)
@@ -1319,6 +1404,7 @@ def main():
         nifty_result.success,
         fno_result.success,
         mcx_result.success,
+        vol_result.success,
     ])
     total = len(sections_to_run)
 
